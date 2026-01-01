@@ -280,21 +280,76 @@ class SpikeFP32Adder(nn.Module):
         cancel_m = self.vec_mux(exact_cancel.expand_as(m_final), zero_23bit, m_final)
         
         # ===== Inf/NaN处理 =====
-        computed_e_all_one = self.vec_and_tree(computed_e)
+        # 1. 检测输入 NaN
+        e_a_all_one = self.vec_and_tree(e_a)
+        m_a_nonzero = self.vec_or_tree(m_a_raw)
+        a_is_nan = self.vec_and(e_a_all_one, m_a_nonzero)
         
+        e_b_all_one = self.vec_and_tree(e_b)
+        m_b_nonzero = self.vec_or_tree(m_b_raw)
+        b_is_nan = self.vec_and(e_b_all_one, m_b_nonzero)
+        
+        any_nan = self.vec_or(a_is_nan, b_is_nan)
+        
+        # 2. 检测输入 Inf
+        m_a_zero = self.vec_not(m_a_nonzero)
+        a_is_inf = self.vec_and(e_a_all_one, m_a_zero)
+        
+        m_b_zero = self.vec_not(m_b_nonzero)
+        b_is_inf = self.vec_and(e_b_all_one, m_b_zero)
+        
+        any_inf = self.vec_or(a_is_inf, b_is_inf)
+        
+        # 3. 检测 Inf - Inf (符号不同且都为Inf)
+        # s_a != s_b AND a_is_inf AND b_is_inf
+        both_inf = self.vec_and(a_is_inf, b_is_inf)
+        diff_sign_inf = self.vec_and(is_diff_sign, both_inf)
+        
+        # 4. 结果选择
+        # is_nan = any_nan OR (Inf - Inf)
+        result_is_nan = self.vec_or(any_nan, diff_sign_inf)
+        
+        nan_res = torch.cat([zeros, ones.expand_as(e_a), ones.expand_as(m_a_raw)], dim=-1) # S=0, E=255, M=All 1 (Quiet NaN)
+        inf_res = torch.cat([s_large, ones.expand_as(e_a), zeros.expand_as(m_a_raw)], dim=-1) # S=Large, E=255, M=0
+        
+        # 优先级: NaN > Inf > Normal
+        
+        # normal vs Inf
+        # result = MUX(any_inf, inf_res, normal)
+        # 但要注意 Inf - Inf -> NaN，所以这里只处理非 NaN 的 Inf 案例
+        # 实际上可以直接级联：
+        
+        # 原有的 normal_result 计算...
+        computed_e_all_one = self.vec_and_tree(computed_e)
         one_8bit_val = torch.cat([ones]*8, dim=-1)
         final_s = self.vec_mux(computed_e_all_one, computed_s, cancel_s)
         final_e = self.vec_mux(computed_e_all_one.expand_as(cancel_e), one_8bit_val, cancel_e)
         final_m = self.vec_mux(computed_e_all_one.expand_as(cancel_m), zero_23bit, cancel_m)
         
+        # 这里的 normal_result 包含了原来的逻辑
+        
+        # 级联选择:
+        # 1. Base: Normal result (with is_big_diff handling already done below)
+        # We need to inject Inf/NaN logic BEFORE or AFTER is_big_diff?
+        # AFTER is safest.
+        
+        # ... logic continues in next block ...
+        
         # ===== 大指数差处理: 直接返回较大的数 =====
         larger_input = self.vec_mux(a_ge_b.expand_as(A), A, B)
         
         # 组装正常结果
-        normal_result = torch.cat([final_s, final_e, final_m], dim=-1)
+        normal_result_base = torch.cat([final_s, final_e, final_m], dim=-1)
         
-        # 根据is_big_diff选择最终结果
-        result = self.vec_mux(is_big_diff.expand_as(normal_result), larger_input, normal_result)
+        # 根据is_big_diff选择 (Normal Logic)
+        normal_result = self.vec_mux(is_big_diff.expand_as(normal_result_base), larger_input, normal_result_base)
+        
+        # 注入 Inf/NaN 逻辑
+        # res = MUX(any_inf, inf_res, normal_result)
+        res_with_inf = self.vec_mux(any_inf.expand_as(normal_result), inf_res, normal_result)
+        
+        # res = MUX(result_is_nan, nan_res, res_with_inf)
+        result = self.vec_mux(result_is_nan.expand_as(res_with_inf), nan_res, res_with_inf)
         
         return result
     

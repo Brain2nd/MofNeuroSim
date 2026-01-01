@@ -248,99 +248,79 @@ class ORGate(BaseLogicGate):
 
 
 class XORGate(BaseLogicGate):
-    """XOR 门 - 双轨编码纯 SNN 实现（无负权重！）
+    """XOR 门 - 纯 SNN 实现 (无非法减法)
     
-    **双轨编码原理**:
-    - 输入 A 表示为 (A_pos, A_neg) = (A, NOT_A)
-    - XOR = (A AND NOT_B) OR (NOT_A AND B)
-    - 使用双轨编码，NOT 操作变成取负极性，无需计算
+    **原理**:
+    XOR(A, B) = (A AND NOT B) OR (NOT A AND B)
     
-    **纯 SNN 约束**:
-    - 只使用 +1 权重的脉冲汇聚
-    - 无 -2.0 权重，无负权重
-    - 100% 位精确来自空间组合逻辑
+    使用内部实例化的 neuromorphic NOTGate 来生成 NOT 信号，
+    而不是使用 `1-x` 数学作弊。
     
-    **真值表**:
-    | A | B | XOR |
-    |---|---|-----|
-    | 0 | 0 | 0   |
-    | 0 | 1 | 1   |
-    | 1 | 0 | 1   |
-    | 1 | 1 | 0   |
-    
-    门电路计数: 4 个 AND + 1 个 OR = 5 个 IF 神经元
+    门电路计数: 2 NOT + 2 AND + 1 OR = 5 神经元
     
     Args:
-        neuron_template: 神经元模板，None 使用默认 IF 神经元
+        neuron_template: 神经元模板
     """
     def __init__(self, neuron_template=None):
         super().__init__()
-        # XOR = (A AND NOT_B) OR (NOT_A AND B)
-        # 使用双轨：(A_pos AND B_neg) OR (A_neg AND B_pos)
+        # 内部实例化 NOT 门
+        self.not_gate = NOTGate(neuron_template)
+        # 组合逻辑
         self.and1 = _create_neuron(neuron_template, threshold=1.5)  # A AND NOT_B
         self.and2 = _create_neuron(neuron_template, threshold=1.5)  # NOT_A AND B
         self.or_out = _create_neuron(neuron_template, threshold=0.5)  # 输出 OR
         
     def forward(self, x_a, x_b):
         self.reset()
-        # 双轨编码：生成 (pos, neg) = (x, 1-x)
-        # 边界转换是允许的（见 SNN_PURITY_ANALYSIS.md）
-        a_pos, a_neg = x_a, 1.0 - x_a
-        b_pos, b_neg = x_b, 1.0 - x_b
         
-        # XOR = (A_pos AND B_neg) OR (A_neg AND B_pos)
-        # 只使用 +1 权重的脉冲汇聚！
-        term1 = self.and1(a_pos + b_neg)  # A AND NOT_B (阈值 1.5)
-        term2 = self.and2(a_neg + b_pos)  # NOT_A AND B (阈值 1.5)
-        out_spike = self.or_out(term1 + term2)  # OR (阈值 0.5)
+        # 使用 SNN 门生成反相信号
+        not_a = self.not_gate(x_a)
+        not_b = self.not_gate(x_b)
+        
+        # XOR = (A AND NOT_B) OR (NOT_A AND B)
+        term1 = self.and1(x_a + not_b)
+        term2 = self.and2(not_a + x_b)
+        out_spike = self.or_out(term1 + term2)
         
         return out_spike
 
     def reset(self):
+        self.not_gate.reset()
         self.and1.reset()
         self.and2.reset()
         self.or_out.reset()
 
 
 class NOTGate(BaseLogicGate):
-    """NOT 门 - 双轨编码纯拓扑实现（零计算！）
+    """NOT 门 - 神经形态抑制实现 (Neuromorphic Inhibition)
     
-    **双轨编码原理**:
-    - 输入 A 表示为 (A_pos, A_neg) = (A, NOT_A)
-    - NOT(A) = A_neg（直接取负极性）
-    - 只需"交换线路"，不需要任何神经元！
+    **纯 SNN 原理**:
+    不再使用 `1.0 - x` 数学计算。而是使用抑制性神经元模型：
+    - 恒定偏置电流 (Bias) = 1.5
+    - 输入信号作为抑制输入 (Weight = -1.0)
+    - 阈值 (Threshold) = 1.0
     
-    **纯 SNN 约束**:
-    - NOT 是纯拓扑操作
-    - 无负权重，无偏置电流
-    - 零计算！
+    **动力学**:
+    - Input=0: I_net = 1.5 - 0 = 1.5 (> 1.0) -> Spike (1)
+    - Input=1: I_net = 1.5 - 1 = 0.5 (< 1.0) -> No Spike (0)
     
-    **真值表**:
-    | A | NOT_A |
-    |---|-------|
-    | 0 |   1   |
-    | 1 |   0   |
-    
-    门电路计数: 0 个 IF 神经元（纯拓扑）
-    
-    **注意**: 边界处的 1.0 - x 是编码转换，不是逻辑运算。
+    这模拟了物理上的"常开+抑制"电路，符合 SNN 纯度要求。
     
     Args:
-        neuron_template: 神经元模板（此门不使用，保留用于接口兼容）
+        neuron_template: 神经元模板，None 使用默认 IF 神经元
     """
     def __init__(self, neuron_template=None):
         super().__init__()
-        # NOT 门是纯拓扑操作，不需要神经元！
-        # 保留 neuron_template 参数只是为了接口兼容
+        # 阈值设为 1.0
+        self.node = _create_neuron(neuron_template, threshold=1.0)
         
     def forward(self, x):
-        # 双轨编码：(pos, neg) = (x, 1-x)
-        # NOT = 取负极性 = 1-x
-        # 边界转换是允许的（见 SNN_PURITY_ANALYSIS.md）
-        return 1.0 - x
+        self.reset()
+        # 物理模拟: Bias(1.5) + Inhibitory Input(-x)
+        return self.node(1.5 - x)
     
     def reset(self):
-        pass  # 无状态，无需重置
+        self.node.reset()
 
 class XNORGate(nn.Module):
     """XNOR门：当两个输入相同时输出1
