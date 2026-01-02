@@ -20,8 +20,9 @@ def bits_to_str(bits):
     return f"{bits[0]} {''.join(map(str, bits[1:5]))} {''.join(map(str, bits[5:]))}"
 
 def reset_all(encoder, mul, add):
-    encoder.sign_node.reset()
-    encoder.binary_encoder.reset()
+    encoder.binary_scanner.reset()
+    mul.reset()
+    add.reset()
     mul.reset()
 
 def test_shape(encoder, mul, add, shape, device, test_name):

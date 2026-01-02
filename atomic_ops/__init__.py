@@ -38,6 +38,11 @@ from .vec_logic_gates import (
     VecAdder, VecSubtractor, VecComparator
 )
 
+# 辅助功能模块
+from .decimal_scanner import DecimalScanner
+from .sign_bit import SignBitNode
+from .dynamic_if import DynamicThresholdIFNode
+
 # 编码器/解码器
 from .floating_point import PulseFloatingPointEncoder
 from .pulse_decoder import (

@@ -37,7 +37,7 @@ def pulse_to_bits(pulse):
 
 float_to_pulse_batch = float64_to_pulse
     
-    return torch.from_numpy(pulses.reshape(original_shape + (64,))).to(device)
+
 
 
 def pulse_to_bits_batch(pulse):

@@ -143,10 +143,7 @@ def debug_failing_case():
         acc_bytes = pulse_to_fp8_bytes(acc_snn.unsqueeze(0)).item()
         
         # 计算参考值
-        ref_acc_fp8 = float_to_fp8_tensor(
-            products_ref[0].float().squeeze() if i == 1 else 
-            float_to_fp8_tensor(sum(products_ref[:i], products_ref[0]).float()).float().squeeze()
-        )
+
         # 重新计算参考
         ref_acc = products_ref[0].float().squeeze()
         for j in range(1, i+1):

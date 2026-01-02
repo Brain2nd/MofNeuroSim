@@ -2,8 +2,8 @@ import torch
 import sys
 import os
 
-# Ensure we can import from the project root
-sys.path.append(os.getcwd())
+# Ensure project root is in path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from atomic_ops.logic_gates import NOTGate, XORGate
 from atomic_ops.vec_logic_gates import VecNOT, VecXOR

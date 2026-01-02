@@ -78,7 +78,9 @@ def test_snn_fp8(model, test_loader, device, num_samples=None):
     with torch.no_grad():
         for data, target in test_loader:
             data, target = data.to(device), target.to(device)
-            output = model(data)
+            # Flatten for MLP
+            data_flat = data.view(-1, 784)
+            output = model(data_flat)
             
             # 检查NaN
             if torch.isnan(output).any():
@@ -117,7 +119,8 @@ def compare_outputs(pytorch_model, snn_model, test_loader, device, num_samples=1
                 pt_pred = pt_out.argmax(dim=1).item()
                 
                 # SNN输出
-                snn_out = snn_model(sample)
+                snn_sample = sample.view(-1, 784)
+                snn_out = snn_model(snn_sample)
                 snn_pred = snn_out.argmax(dim=1).item()
                 
                 match = (pt_pred == snn_pred)

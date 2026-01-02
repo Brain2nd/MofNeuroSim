@@ -40,12 +40,13 @@ class VecDivIteration(nn.Module):
     2. 如果 R >= D (无借位)，Q=1，R=R-D
     3. 如果 R < D (有借位)，Q=0，R保持不变
     """
-    def __init__(self, bits):
+
+    def __init__(self, bits, neuron_template=None):
         super().__init__()
         self.bits = bits
-        self.sub = VecSubtractor(bits)
-        self.not_borrow = VecNOT()
-        self.mux = VecMUX()
+        self.sub = VecSubtractor(bits, neuron_template=neuron_template)
+        self.not_borrow = VecNOT(neuron_template=neuron_template)
+        self.mux = VecMUX(neuron_template=neuron_template)
         
     def forward(self, R, D):
         """
