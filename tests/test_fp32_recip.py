@@ -8,7 +8,7 @@ FP32 Reciprocal 测试 - 验证 SpikeFP32Reciprocal 的正确性
 3. 特殊值处理: 1/0, 1/Inf, 1/NaN
 4. 位精确性验证
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import sys
 import os

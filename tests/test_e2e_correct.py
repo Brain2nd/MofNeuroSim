@@ -4,13 +4,13 @@
 """
 import torch
 import sys
-sys.path.insert(0, '/home/dgxspark/Desktop/HumanBrain')
+import sys; import os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from SNNTorch.atomic_ops import (
+from atomic_ops import (
     PulseFloatingPointEncoder,
     SpikeFP8Linear_Fast
 )
-from SNNTorch.atomic_ops.pulse_decoder import PulseFloatingPointDecoder
+from atomic_ops.pulse_decoder import PulseFloatingPointDecoder
 
 
 def pulse_to_fp8_bytes(pulse):
@@ -97,7 +97,7 @@ def test_correct_comparison():
         scan_integer_bits=10, scan_decimal_bits=10
     ).to(device)
     
-    from SNNTorch.atomic_ops import SpikeFP8Multiplier, SpikeFP8Adder_Spatial
+    from atomic_ops import SpikeFP8Multiplier, SpikeFP8Adder_Spatial
     mul = SpikeFP8Multiplier().to(device)
     adder = SpikeFP8Adder_Spatial().to(device)
     

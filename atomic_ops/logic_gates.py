@@ -59,7 +59,7 @@ C = (A ∧ B) ∨ ((A ⊕ B) ∧ Cin)
 使用示例
 --------
 ```python
-from SNNTorch.atomic_ops.logic_gates import ANDGate, FullAdder, SimpleLIFNode
+from atomic_ops.logic_gates import ANDGate, FullAdder, SimpleLIFNode
 
 # 基础 AND 门 (默认 IF 神经元)
 and_gate = ANDGate()
@@ -78,91 +78,40 @@ s, c = fa(a, b, cin)  # s = a⊕b⊕cin, c = carry
 fa_lif = FullAdder(neuron_template=lif_template)
 ```
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 许可: MIT License
 """
 import torch
 import torch.nn as nn
 from copy import deepcopy
-from spikingjelly.activation_based import neuron, surrogate
+from .neurons import SimpleIFNode, SimpleLIFNode
 
 
 # ==============================================================================
-# 神经元模板
+# 神经元模板 (已移至 neurons.py，此处通过 import 引入)
 # ==============================================================================
-
-class SimpleLIFNode(nn.Module):
-    """简化的 LIF 神经元，用于物理硬件仿真
-    
-    **动力学方程**:
-    ```
-    V(t+1) = β × V(t) + I(t)    # 膜电位泄漏 + 积累
-    S(t) = H(V(t) - V_th)       # 脉冲发放
-    V(t) = V(t) - S(t) × V_th   # 软复位
-    ```
-    
-    **参数说明**:
-    - β (beta): 泄漏因子，0 < β ≤ 1
-      - β = 1.0: 退化为 IF 神经元（无泄漏）
-      - β < 1.0: 膜电位逐步衰减
-      - β → 0:   严重泄漏，信息快速丢失
-    
-    **物理意义**:
-    - β 对应神经元膜电阻和膜电容的时间常数
-    - 真实 MOF 硬件中 β ≈ 0.9-0.99（取决于工艺）
-    
-    Args:
-        beta: 膜电位泄漏因子 (0 < beta ≤ 1)
-        v_threshold: 发放阈值
-        v_reset: 复位电压 (软复位时使用 v_threshold)
-    """
-    def __init__(self, beta=1.0, v_threshold=1.0, v_reset=0.0):
-        super().__init__()
-        self.beta = beta
-        self.v_threshold = v_threshold
-        self.v_reset = v_reset
-        self.register_buffer('v', None)
-        
-    def forward(self, x):
-        if self.v is None:
-            self.v = torch.zeros_like(x)
-        
-        # LIF 动力学: V = beta * V + I
-        self.v = self.beta * self.v + x
-        
-        # 发放判断
-        spike = (self.v >= self.v_threshold).float()
-        
-        # 软复位
-        self.v = self.v - spike * self.v_threshold
-        
-        return spike
-    
-    def reset(self):
-        self.v = None
+# SimpleLIFNode 和 SimpleIFNode 已从 .neurons 导入
 
 
-def _create_neuron(template, threshold, v_reset=0.0):
+def _create_neuron(template, threshold, v_reset=None):
     """从模板创建指定阈值的神经元
-    
+
     Args:
         template: 神经元模板，None 则创建默认 IF 神经元
         threshold: 目标阈值
-        v_reset: 复位电压
-    
+        v_reset: 复位电压 (None=软复位, 数值=硬复位)
+                 默认为 None (软复位)，保留残差用于跨时间步实验
+
     Returns:
         配置好的神经元实例
     """
     if template is None:
-        return neuron.IFNode(
-            v_threshold=threshold, 
-            v_reset=v_reset,
-            surrogate_function=surrogate.ATan()
-        )
+        return SimpleIFNode(v_threshold=threshold, v_reset=v_reset)
     else:
         node = deepcopy(template)
         node.v_threshold = threshold
-        node.v_reset = v_reset
+        if hasattr(node, 'v_reset'):
+            node.v_reset = v_reset
         return node
 
 

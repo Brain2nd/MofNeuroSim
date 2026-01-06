@@ -17,7 +17,7 @@ Pipeline:
 """
 
 import sys
-sys.path.insert(0, "/home/dgxspark/Desktop/HumanBrain")
+import sys; import os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
 import torch.nn as nn
@@ -25,7 +25,7 @@ from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 import time
 
-from SNNTorch.atomic_ops import PulseFloatingPointEncoder, SpikeFP8Linear_Fast
+from atomic_ops import PulseFloatingPointEncoder, SpikeFP8Linear_Fast
 
 def pytorch_native_matmul(a, b):
     """

@@ -8,7 +8,7 @@ FP8 ReLU 测试 - 验证 SpikeFP8ReLU 符合 SNN 原则且功能正确
 3. 批量处理
 4. GPU 并行
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import sys
 import os

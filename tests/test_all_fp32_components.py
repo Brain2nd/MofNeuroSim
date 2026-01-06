@@ -4,17 +4,17 @@ FP32组件全面验证测试 - 真正并行版（端到端浮点验证）
 
 使用GPU + 向量化编码/解码实现真正并行。
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import sys
-sys.path.insert(0, "/home/dgxspark/Desktop/HumanBrain")
+import sys; import os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import time
 
-from SNNTorch.atomic_ops.pulse_decoder import PulseFP32Decoder
+from atomic_ops.pulse_decoder import PulseFP32Decoder
 
 
 def float_to_pulse_vectorized(x: torch.Tensor) -> torch.Tensor:
@@ -31,7 +31,7 @@ def float_to_pulse_vectorized(x: torch.Tensor) -> torch.Tensor:
 
 def test_exp(device, n_samples=100):
     """测试SpikeFP32Exp - 并行（端到端浮点验证）"""
-    from SNNTorch.atomic_ops import SpikeFP32Exp
+    from atomic_ops import SpikeFP32Exp
     
     exp_mod = SpikeFP32Exp().to(device)
     decoder = PulseFP32Decoder().to(device)
@@ -54,7 +54,7 @@ def test_exp(device, n_samples=100):
 
 def test_sqrt(device, n_samples=100):
     """测试SpikeFP32Sqrt - 并行（端到端浮点验证）"""
-    from SNNTorch.atomic_ops import SpikeFP32Sqrt
+    from atomic_ops import SpikeFP32Sqrt
     
     sqrt_mod = SpikeFP32Sqrt().to(device)
     decoder = PulseFP32Decoder().to(device)
@@ -77,7 +77,7 @@ def test_sqrt(device, n_samples=100):
 
 def test_sigmoid(device, n_samples=100):
     """测试SpikeFP32Sigmoid - 并行（端到端浮点验证）"""
-    from SNNTorch.atomic_ops import SpikeFP32Sigmoid
+    from atomic_ops import SpikeFP32Sigmoid
     
     sig_mod = SpikeFP32Sigmoid().to(device)
     decoder = PulseFP32Decoder().to(device)
@@ -100,7 +100,7 @@ def test_sigmoid(device, n_samples=100):
 
 def test_silu(device, n_samples=100):
     """测试SpikeFP32SiLU - 并行（端到端浮点验证）"""
-    from SNNTorch.atomic_ops import SpikeFP32SiLU
+    from atomic_ops import SpikeFP32SiLU
     
     silu_mod = SpikeFP32SiLU().to(device)
     decoder = PulseFP32Decoder().to(device)
@@ -123,7 +123,7 @@ def test_silu(device, n_samples=100):
 
 def test_embedding(device):
     """测试SpikeFP32Embedding（端到端浮点验证）"""
-    from SNNTorch.atomic_ops import SpikeFP32Embedding
+    from atomic_ops import SpikeFP32Embedding
     
     vocab_size = 16
     embed_dim = 8

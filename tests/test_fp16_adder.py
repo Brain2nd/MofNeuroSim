@@ -11,12 +11,12 @@
 import torch
 import numpy as np
 import sys
-sys.path.insert(0, '/home/dgxspark/Desktop/HumanBrain')
+import sys; import os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from SNNTorch.atomic_ops import PulseFloatingPointEncoder
-from SNNTorch.atomic_ops.fp16_components import FP8ToFP16Converter, FP16ToFP8Converter
-from SNNTorch.atomic_ops.fp16_adder import SpikeFP16Adder
-from SNNTorch.atomic_ops.pulse_decoder import PulseFP16Decoder, PulseFloatingPointDecoder
+from atomic_ops import PulseFloatingPointEncoder
+from atomic_ops.fp16_components import FP8ToFP16Converter, FP16ToFP8Converter
+from atomic_ops.fp16_adder import SpikeFP16Adder
+from atomic_ops.pulse_decoder import PulseFP16Decoder, PulseFloatingPointDecoder
 
 
 def float16_to_pulses(x: torch.Tensor, device) -> torch.Tensor:

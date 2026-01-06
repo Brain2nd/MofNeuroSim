@@ -1,7 +1,7 @@
 import sys
-sys.path.insert(0, "/home/dgxspark/Desktop/HumanBrain")
+import sys; import os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
-from SNNTorch.atomic_ops import DynamicThresholdIFNode
+from atomic_ops import DynamicThresholdIFNode
 
 def test_neuron():
     # Case 1: 纯整数测试 (N=4, NT=0) -> 13 (1101)

@@ -8,15 +8,15 @@ FP32 乘法器测试 - 验证纯SNN实现与PyTorch的一致性（端到端浮�
 3. 特殊情况测试 (0×Inf=NaN, NaN传播)
 4. 精度验证 (100%位精确匹配)
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import torch
 import struct
 import sys
-sys.path.insert(0, '/home/dgxspark/Desktop/HumanBrain')
+import sys; import os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from SNNTorch.atomic_ops import SpikeFP32Multiplier
-from SNNTorch.atomic_ops.pulse_decoder import PulseFP32Decoder
+from atomic_ops import SpikeFP32Multiplier
+from atomic_ops.pulse_decoder import PulseFP32Decoder
 
 
 def float_to_fp32_bits(x):

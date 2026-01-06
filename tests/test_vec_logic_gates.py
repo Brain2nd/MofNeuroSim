@@ -8,7 +8,7 @@
 3. GPU 并行性能
 4. 与非向量化版本的一致性
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import sys
 import os

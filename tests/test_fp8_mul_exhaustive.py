@@ -1,7 +1,7 @@
 import sys
-sys.path.insert(0, "/home/dgxspark/Desktop/HumanBrain")
+import sys; import os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
-from SNNTorch.atomic_ops import SpikeFP8Multiplier, PulseFloatingPointEncoder, PulseFloatingPointDecoder
+from atomic_ops import SpikeFP8Multiplier, PulseFloatingPointEncoder, PulseFloatingPointDecoder
 
 def test_exhaustive():
     print("=== Comprehensive Random Testing for SpikeFP8Multiplier ===")

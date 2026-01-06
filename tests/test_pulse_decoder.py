@@ -11,13 +11,13 @@
 3. 任意维度支持
 4. FP16/FP32 解码器
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import torch
 import sys
-sys.path.insert(0, '/home/dgxspark/Desktop/HumanBrain')
+import sys; import os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from SNNTorch.atomic_ops import (
+from atomic_ops import (
     PulseFloatingPointEncoder,
     PulseFloatingPointDecoder,
     PulseFP16Decoder,

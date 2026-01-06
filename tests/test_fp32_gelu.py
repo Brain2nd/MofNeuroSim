@@ -10,7 +10,7 @@ FP32 GELU 测试 - 验证 SpikeFP32GELU 的正确性
 
 GELU(x) ≈ x * sigmoid(1.702 * x)
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import sys
 import os

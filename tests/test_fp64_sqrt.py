@@ -7,7 +7,7 @@ FP64 平方根测试 - 验证 SpikeFP64Sqrt 的正确性
 2. 特殊值处理 (NaN, Inf, Zero, 负数)
 3. 精度验证
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import sys
 import os

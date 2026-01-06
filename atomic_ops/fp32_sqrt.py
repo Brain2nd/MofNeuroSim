@@ -6,7 +6,7 @@ FP32 平方根函数 - 100%纯SNN门电路实现
 
 25次迭代获得24位精度 + 1位舍入。
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import torch
 import torch.nn as nn

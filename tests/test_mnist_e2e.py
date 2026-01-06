@@ -5,7 +5,7 @@
 目标：验证SNN实现与PyTorch完全一致
 """
 import sys
-sys.path.insert(0, "/home/dgxspark/Desktop/HumanBrain")
+import sys; import os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
 import torch.nn as nn
@@ -14,8 +14,8 @@ from torchvision import datasets, transforms
 import time
 
 # 使用统一的转换函数和模型
-from SNNTorch.atomic_ops import float_to_fp8_bits, fp8_bits_to_float
-from SNNTorch.models.mnist_snn_infer import SNN_MLP
+from atomic_ops import float_to_fp8_bits, fp8_bits_to_float
+from models.mnist_snn_infer import SNN_MLP
 
 
 class PyTorch_FP8_MLP(nn.Module):
@@ -160,7 +160,7 @@ def main():
     print(f"测试集: {len(test_dataset)} 样本")
     
     # 加载权重
-    weights_path = '/home/dgxspark/Desktop/HumanBrain/SNNTorch/models/mnist_fp8_weights.pt'
+    weights_path = os.path.join(os.path.dirname(__file__), 'mnist_fp8_weights.pt')
     weights = torch.load(weights_path, map_location=device)
     print(f"权重已加载: {weights_path}")
     
@@ -219,8 +219,11 @@ def main():
     for r in results:
         print(f"| {r['n']:>6} | {r['pt_acc']:>10.2f}% | {r['snn_acc']:>6.2f}% | {r['diff']:>4.2f}% | {r['nan_count']:>5} |")
     
-    # 保存结果
-    torch.save(results, '/home/dgxspark/Desktop/HumanBrain/SNNTorch/results/mnist_e2e_results.pt')
+    # 保存结果到当前目录的 results 文件夹
+    import os
+    results_dir = os.path.join(os.path.dirname(__file__), '..', 'results')
+    os.makedirs(results_dir, exist_ok=True)
+    torch.save(results, os.path.join(results_dir, 'mnist_e2e_results.pt'))
     
     print("\n结论:")
     avg_diff = sum(r['diff'] for r in results) / len(results)

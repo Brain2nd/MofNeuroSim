@@ -14,7 +14,7 @@ ReLU(x) = max(0, x)
 - 负数 (符号位=1) → mask=0 → 所有位变为 0 → +0
 - 正数 (符号位=0) → mask=1 → 所有位保持 → 原值
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import torch
 import torch.nn as nn

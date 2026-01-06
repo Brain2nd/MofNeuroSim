@@ -4,9 +4,9 @@
 import torch
 import torch.nn as nn
 import sys
-sys.path.insert(0, '/home/dgxspark/Desktop/HumanBrain')
+import sys; import os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from SNNTorch.atomic_ops import PulseFloatingPointEncoder, SpikeFP8Linear
+from atomic_ops import PulseFloatingPointEncoder, SpikeFP8Linear
 
 def get_fp8_bits(x):
     """将float转换为FP8二进制位"""

@@ -7,11 +7,11 @@
 3. Linear层的总脉冲发放
 """
 import sys
-sys.path.insert(0, "/home/dgxspark/Desktop/HumanBrain")
+import sys; import os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
 import torch.nn as nn
-from SNNTorch.atomic_ops import (
+from atomic_ops import (
     ANDGate, ORGate, XORGate, NOTGate,
     HalfAdder, FullAdder, RippleCarryAdder,
     MUXGate, ArrayMultiplier4x4_Strict,
@@ -20,7 +20,7 @@ from SNNTorch.atomic_ops import (
     PriorityEncoder8, BarrelShifter8, ExponentAdjuster, Denormalizer,
     NewNormalizationUnit, TemporalExponentGenerator, DelayNode
 )
-from SNNTorch.atomic_ops.fp8_adder_spatial import (
+from atomic_ops.fp8_adder_spatial import (
     Comparator4Bit, Comparator3Bit, BarrelShifterRight12,
     BarrelShifterLeft8, LeadingZeroDetector8, 
     Adder12Bit, Subtractor12Bit
@@ -35,8 +35,8 @@ def count_if_neurons(module):
     for name, child in module.named_modules():
         class_name = child.__class__.__name__
         
-        # SpikingJelly的IF/LIF神经元
-        if 'IFNode' in class_name or 'LIFNode' in class_name:
+        # 自定义的SimpleIFNode
+        if 'SimpleIFNode' in class_name:
             count += 1
         
         # 我们自定义的SimpleLIF

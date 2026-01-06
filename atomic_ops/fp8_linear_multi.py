@@ -77,7 +77,7 @@ y_pulse = linear(x_pulse)  # FP8: [batch, 32, 8]
                             # FP32: [batch, 32, 32]
 ```
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 许可: MIT License
 """
 import torch

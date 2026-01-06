@@ -15,7 +15,7 @@ FP64 格式: [S | E10..E0 | M51..M0], bias=1023
 - 尾数: 109次迭代产生54位商 + 舍入信息
 - RNE舍入
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import torch
 import torch.nn as nn

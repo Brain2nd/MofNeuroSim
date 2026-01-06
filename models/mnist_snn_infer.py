@@ -4,11 +4,11 @@ SNN FP8 MNIST 推理模型
 使用纯SNN脉冲网络进行推理（仅推理，不支持训练）
 """
 import sys
-sys.path.insert(0, "/home/dgxspark/Desktop/HumanBrain")
+import sys; import os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
 import torch.nn as nn
-from SNNTorch.atomic_ops import (
+from atomic_ops import (
     PulseFloatingPointEncoder, 
     SpikeFP8Linear_Fast,
     SpikeFP8Linear,
@@ -166,7 +166,7 @@ def main():
     print(f"Device: {device}")
     
     # 加载权重
-    weights_path = '/home/dgxspark/Desktop/HumanBrain/SNNTorch/models/mnist_fp8_weights.pt'
+    weights_path = os.path.join(os.path.dirname(__file__), 'mnist_fp8_weights.pt')
     weights = torch.load(weights_path, map_location=device)
     print(f"\n加载权重: {weights_path}")
     

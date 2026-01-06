@@ -1,4 +1,4 @@
-# SNNTorch 测试目录
+# MofNeuroSim 测试目录
 
 ## 📁 目录结构
 
@@ -35,19 +35,19 @@ tests/
 
 ```bash
 # 完整测试
-python SNNTorch/tests/test_suite.py
+python MofNeuroSim/tests/test_suite.py
 
 # 只测试逻辑门
-python SNNTorch/tests/test_suite.py --only logic_gates
+python MofNeuroSim/tests/test_suite.py --only logic_gates
 
 # 只测试 Linear 层
-python SNNTorch/tests/test_suite.py --only linear
+python MofNeuroSim/tests/test_suite.py --only linear
 ```
 
 ### 运行 100% 对齐测试
 
 ```bash
-python SNNTorch/tests/test_all_precision_alignment.py
+python MofNeuroSim/tests/test_all_precision_alignment.py
 ```
 
 预期输出:
@@ -85,7 +85,7 @@ FP32 累加: ✓ 100% 对齐
 所有物理模拟测试现在使用 `neuron_template` 参数动态切换神经元类型：
 
 ```python
-from SNNTorch.atomic_ops.logic_gates import ANDGate, SimpleLIFNode
+from atomic_ops.logic_gates import ANDGate, SimpleLIFNode
 
 # 使用 LIF 神经元进行物理仿真
 lif_template = SimpleLIFNode(beta=0.9)
@@ -116,6 +116,6 @@ _debug_archive/
 **开源前建议**: 删除整个 `_debug_archive/` 目录
 
 ```bash
-rm -rf SNNTorch/tests/_debug_archive
+rm -rf MofNeuroSim/tests/_debug_archive
 ```
 

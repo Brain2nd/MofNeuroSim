@@ -1,7 +1,7 @@
 import sys
-sys.path.insert(0, "/home/dgxspark/Desktop/HumanBrain")
+import sys; import os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
-from SNNTorch.atomic_ops import ANDGate, ORGate, XORGate, FullAdder
+from atomic_ops import ANDGate, ORGate, XORGate, FullAdder
 
 def test_logic_gates():
     print("=== Testing Spike Logic Gates ===")

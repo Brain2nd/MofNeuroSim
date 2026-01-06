@@ -1,13 +1,13 @@
 #!/usr/bin/env python
 """
-SNNTorch 集成测试入口
+MofNeuroSim 集成测试入口
 ====================
 运行所有现有测试文件
 
 使用方法:
-    python SNNTorch/tests/run_all_tests.py           # 运行所有测试
-    python SNNTorch/tests/run_all_tests.py -v        # 详细输出
-    python SNNTorch/tests/run_all_tests.py -k fp32   # 只运行包含 fp32 的测试
+    python MofNeuroSim/tests/run_all_tests.py           # 运行所有测试
+    python MofNeuroSim/tests/run_all_tests.py -v        # 详细输出
+    python MofNeuroSim/tests/run_all_tests.py -k fp32   # 只运行包含 fp32 的测试
 """
 import subprocess
 import sys

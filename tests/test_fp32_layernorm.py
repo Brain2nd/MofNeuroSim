@@ -10,7 +10,7 @@ FP32 LayerNorm 测试 - 验证 SpikeFP32LayerNorm 的正确性
 
 LayerNorm(x) = (x - mean(x)) / sqrt(var(x) + eps)
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import sys
 import os

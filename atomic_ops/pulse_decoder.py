@@ -32,7 +32,7 @@ pulse = torch.tensor([[0, 0, 1, 1, 1, 0, 0, 0]])  # FP8 脉冲
 value = decoder(pulse)  # 转换为浮点数
 ```
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 许可: MIT License
 """
 import torch

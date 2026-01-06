@@ -30,7 +30,7 @@ FP32 指数函数 exp(x) - 100%纯SNN门电路实现 (glibc算法复刻版)
 - 禁止使用 a * b 逻辑AND, 必须用 ANDGate  
 - 所有操作通过纯SNN门电路完成
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import torch
 import torch.nn as nn

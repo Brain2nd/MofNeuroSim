@@ -10,7 +10,7 @@ LayerNorm(x) = (x - mean(x)) / sqrt(var(x) + eps)
 
 使用FP64内部精度以减少累积误差。
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import torch
 import torch.nn as nn

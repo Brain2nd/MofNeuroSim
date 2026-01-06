@@ -12,16 +12,16 @@
 - NOT 门是纯拓扑操作（零计算）
 - 功能与原始门电路完全一致
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import sys
-sys.path.insert(0, "/home/dgxspark/Desktop/HumanBrain")
+import sys; import os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
 import torch.nn as nn
 
 # 导入双轨门电路
-from SNNTorch.atomic_ops.dual_rail_gates import (
+from atomic_ops.dual_rail_gates import (
     to_dual_rail, from_dual_rail,
     DualRailNOT, DualRailAND, DualRailOR, DualRailXOR, DualRailMUX,
     DualRailHalfAdder, DualRailFullAdder,
@@ -30,7 +30,7 @@ from SNNTorch.atomic_ops.dual_rail_gates import (
 )
 
 # 导入原始门电路（用于对比）
-from SNNTorch.atomic_ops.logic_gates import (
+from atomic_ops.logic_gates import (
     NOTGate, ANDGate, ORGate, XORGate, MUXGate,
     HalfAdder, FullAdder
 )

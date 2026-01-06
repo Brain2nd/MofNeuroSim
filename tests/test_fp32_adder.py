@@ -8,7 +8,7 @@ FP32 加法器测试 - 验证 SpikeFP32Adder 的 bit-exactness
 3. 舍入模式 (RNE)
 4. ULP 误差统计
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import sys
 import os

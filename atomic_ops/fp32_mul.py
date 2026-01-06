@@ -17,7 +17,7 @@ FP32 格式: [S | E7..E0 | M22..M0], bias=127
 - NaN: 任一为NaN → NaN
 - Subnormal: 完整支持
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import torch
 import torch.nn as nn

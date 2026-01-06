@@ -19,18 +19,18 @@ FP8 × FP8 → FP32
 2. 与 PyTorch 参考对比
 3. 边界情况 (零、subnormal)
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import torch
 import sys
-sys.path.insert(0, '/home/dgxspark/Desktop/HumanBrain')
+import sys; import os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from SNNTorch.atomic_ops import (
+from atomic_ops import (
     PulseFloatingPointEncoder,
     PulseFloatingPointDecoder,
     PulseFP32Decoder,
 )
-from SNNTorch.atomic_ops.fp8_mul_to_fp32 import SpikeFP8MulToFP32
+from atomic_ops.fp8_mul_to_fp32 import SpikeFP8MulToFP32
 
 
 def test_basic_multiplication():

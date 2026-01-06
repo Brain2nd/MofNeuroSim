@@ -14,7 +14,6 @@ y_{n+1} = 0.5 * (y_n + x / y_n)
 import torch
 import torch.nn as nn
 import struct
-import numpy as np
 from .vec_logic_gates import (
     VecAND, VecOR, VecXOR, VecNOT, VecMUX,
     VecORTree, VecANDTree, VecAdder

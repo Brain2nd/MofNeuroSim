@@ -698,13 +698,13 @@ def test_neuron_template_actually_used():
     if not (or_threshold_correct and or_beta_correct):
         all_passed = False
     
-    # 测试 3: 验证默认情况下使用 IFNode
-    from spikingjelly.activation_based import neuron as sj_neuron
+    # 测试 3: 验证默认情况下使用 SimpleIFNode
+    from atomic_ops.neurons import SimpleIFNode
     and_gate_default = ANDGate().to(device)  # 不传 neuron_template
-    is_if = isinstance(and_gate_default.node, sj_neuron.IFNode)
-    
-    print(f"  默认使用 IFNode: {is_if} {'✓' if is_if else '✗'}")
-    
+    is_if = isinstance(and_gate_default.node, SimpleIFNode)
+
+    print(f"  默认使用 SimpleIFNode: {is_if} {'✓' if is_if else '✗'}")
+
     if not is_if:
         all_passed = False
     

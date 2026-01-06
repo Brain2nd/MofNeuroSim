@@ -3,15 +3,15 @@
 """
 import torch
 import sys
-sys.path.insert(0, '/home/dgxspark/Desktop/HumanBrain')
+import sys; import os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from SNNTorch.atomic_ops import (
+from atomic_ops import (
     PulseFloatingPointEncoder,
     SpikeFP8Multiplier,
     SpikeFP8Adder_Spatial,
     SpikeFP8Linear_Fast
 )
-from SNNTorch.atomic_ops.pulse_decoder import PulseFloatingPointDecoder
+from atomic_ops.pulse_decoder import PulseFloatingPointDecoder
 
 
 def float_to_fp8_tensor(x):

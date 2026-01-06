@@ -7,7 +7,7 @@ FP32 除法器测试 - 验证 SpikeFP32Divider 的 bit-exactness
 2. 特殊值处理 (NaN, Inf, Zero, 除零)
 3. ULP 误差统计
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import sys
 import os

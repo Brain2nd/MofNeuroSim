@@ -55,7 +55,7 @@ x = torch.tensor([1.5, -0.25, 0.0])  # 浮点输入
 pulse = encoder(x)  # [..., 8] 脉冲输出
 ```
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 许可: MIT License
 """
 import torch

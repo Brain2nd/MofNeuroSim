@@ -6,7 +6,7 @@ SiLU(x) = x * sigmoid(x)
 
 使用已有的Multiplier和Sigmoid组合实现。
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import torch
 import torch.nn as nn

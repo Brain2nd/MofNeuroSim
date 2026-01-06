@@ -20,7 +20,7 @@ Pure SNN Constraints:
 import torch
 import torch.nn as nn
 from copy import deepcopy
-from spikingjelly.activation_based import neuron, surrogate
+from ..neurons import SimpleIFNode
 
 class DualRailBlock(nn.Module):
     """Base class for all Dual-Rail components."""
@@ -36,16 +36,23 @@ class DualRailBlock(nn.Module):
             if hasattr(module, 'reset') and module is not self:
                 module.reset()
 
-def create_neuron(template, threshold, v_reset=0.0):
-    """Helper to create a neuron from a template."""
+def create_neuron(template, threshold, v_reset=None):
+    """Helper to create a neuron from a template.
+
+    Args:
+        template: 神经元模板，None 则创建默认 IF 神经元
+        threshold: 目标阈值
+        v_reset: 复位电压 (None=软复位, 数值=硬复位)
+                 默认为 None (软复位)，保留残差用于跨时间步实验
+
+    Returns:
+        配置好的神经元实例
+    """
     if template is None:
-        return neuron.IFNode(
-            v_threshold=threshold, 
-            v_reset=v_reset,
-            surrogate_function=surrogate.ATan()
-        )
+        return SimpleIFNode(v_threshold=threshold, v_reset=v_reset)
     else:
         node = deepcopy(template)
         node.v_threshold = threshold
-        node.v_reset = v_reset
+        if hasattr(node, 'v_reset'):
+            node.v_reset = v_reset
         return node

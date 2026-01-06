@@ -5,7 +5,7 @@ LOG_DIR="test_logs"
 mkdir -p "$LOG_DIR"
 
 echo "========================================"
-echo "SNNTorch 批量测试脚本"
+echo "MofNeuroSim 批量测试脚本"
 echo "环境: conda env 'SNN'"
 echo "日志目录: $(pwd)/$LOG_DIR"
 echo "========================================"

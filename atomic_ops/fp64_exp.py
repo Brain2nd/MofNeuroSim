@@ -27,7 +27,7 @@ FP64 指数函数 exp(x) - 100%纯SNN门电路实现
 import torch
 import torch.nn as nn
 import struct
-import numpy as np
+import math
 from .logic_gates import (ANDGate, ORGate, XORGate, NOTGate, MUXGate,
                           FullAdder)
 from .vec_logic_gates import (
@@ -665,7 +665,7 @@ class SpikeFP64Exp(nn.Module):
         # 常量 (FP64精度)
         # N = 64
         # N/ln2 = 92.33248261689366
-        inv_ln2_n = make_fp64_constant(64.0 / np.log(2.0), batch_shape, device)
+        inv_ln2_n = make_fp64_constant(64.0 / math.log(2.0), batch_shape, device)
         half = make_fp64_constant(0.5, batch_shape, device)
         inv_64 = make_fp64_constant(1.0 / 64.0, batch_shape, device)
         const_64 = make_fp64_constant(64.0, batch_shape, device)
@@ -674,7 +674,7 @@ class SpikeFP64Exp(nn.Module):
         # LN2_N_HI + LN2_N_LO ≈ ln2/64
         # 0.010830424696249145
         # 分解策略: 取前40位作为HI
-        val_ln2_n = np.log(2.0) / 64.0
+        val_ln2_n = math.log(2.0) / 64.0
         bits_ln2_n = float64_to_bits(val_ln2_n)
         # 掩码去掉低24位 (保留符号、指数和尾数高28位, 总共约40位有效精度)
         mask_hi = 0xFFFFFFFFFF000000

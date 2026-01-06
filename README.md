@@ -170,7 +170,7 @@ git clone https://github.com/Brain2nd/MofNeuroSim.git
 cd MofNeuroSim
 
 # Install dependencies
-pip install torch spikingjelly numpy
+pip install torch numpy
 ```
 
 ### Basic Usage
@@ -261,7 +261,7 @@ y = decoder(y_pulse)       # [32, 128]
 For hardware simulation of MOF chips, we provide LIF (Leaky Integrate-and-Fire) variants:
 
 ```python
-from atomic_ops.logic_gates_lif import (
+from atomic_ops import (
     SimpleLIFNode,
     # LIF-based gates with membrane leakage
 )
@@ -332,7 +332,7 @@ MofNeuroSim/
 │   ├── converters.py             # Float ↔ Pulse utilities
 │   │
 │   ├── logic_gates.py            # IF-based logic gates
-│   ├── logic_gates_lif.py        # LIF-based gates (physical sim)
+│   ├── neurons.py                # Pure PyTorch Neurons
 │   ├── vec_logic_gates.py        # Vectorized parallel gates
 │   │
 │   ├── floating_point.py         # FP8 encoder
@@ -452,7 +452,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🙏 Acknowledgments
 
-- [SpikingJelly](https://github.com/fangwei123456/spikingjelly) - SNN simulation framework
 - [PyTorch](https://pytorch.org/) - Deep learning framework
 
 ---

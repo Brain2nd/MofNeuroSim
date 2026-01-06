@@ -9,11 +9,10 @@ FP32 Embedding层 - 100%纯SNN门电路实现
 - token_id编码为log2(vocab_size)位二进制脉冲
 - 用MUX树根据地址位逐层选择，O(log V)复杂度
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import torch
 import torch.nn as nn
-import struct
 import math
 from .logic_gates import MUXGate
 
@@ -138,18 +137,21 @@ class SpikeFP32Embedding(nn.Module):
         return torch.stack(result, dim=-1)
     
     def _float_to_fp32_pulse(self, x: torch.Tensor) -> torch.Tensor:
-        """浮点 → FP32脉冲"""
+        """浮点 → FP32脉冲 (纯PyTorch实现)"""
         device = x.device
-        shape = x.shape
-        x_flat = x.flatten().cpu().numpy()
-        
+        original_shape = x.shape
+
+        # 使用 view 进行位重解释: float32 -> int32
+        x_flat = x.flatten().to(torch.float32)
+        bits_int = x_flat.view(torch.int32)
+
+        # 提取每一位 (MSB-first)
         pulses = []
-        for val in x_flat:
-            bits = struct.unpack('>I', struct.pack('>f', val))[0]
-            pulse = [float((bits >> (31 - i)) & 1) for i in range(32)]
-            pulses.append(pulse)
-        
-        return torch.tensor(pulses, dtype=torch.float32, device=device).view(shape + (32,))
+        for i in range(31, -1, -1):
+            pulses.append(((bits_int >> i) & 1).float())
+
+        result = torch.stack(pulses, dim=-1)  # [N, 32]
+        return result.view(original_shape + (32,)).to(device)
     
     def reset(self):
         for layer in self.mux_layers:

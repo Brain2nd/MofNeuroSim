@@ -6,7 +6,7 @@ FP32 倒数函数 - 100%纯SNN门电路实现
 
 完全避免迭代近似算法，保证100%位精确。
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import torch
 import torch.nn as nn

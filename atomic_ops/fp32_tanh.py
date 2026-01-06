@@ -8,7 +8,7 @@ tanh(x) = (e^x - e^-x) / (e^x + e^-x)
 
 使用最后一个形式实现，因为它只需要一次exp计算。
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import torch
 import torch.nn as nn

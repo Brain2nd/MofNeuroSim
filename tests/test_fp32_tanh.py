@@ -10,7 +10,7 @@ FP32 Tanh 测试 - 验证 SpikeFP32Tanh 的正确性
 
 tanh(x) = (e^2x - 1) / (e^2x + 1)
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import sys
 import os

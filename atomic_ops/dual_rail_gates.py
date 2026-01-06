@@ -32,52 +32,31 @@
 - 不依赖权重精度
 - NOT 是纯拓扑操作，零计算
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 许可: MIT License
 """
 import torch
 import torch.nn as nn
 from copy import deepcopy
-from spikingjelly.activation_based import neuron, surrogate
+from .neurons import SimpleIFNode, SimpleLIFNode
 
 
 # ==============================================================================
-# 神经元模板
+# 神经元模板 (已移至 neurons.py)
 # ==============================================================================
 
-class SimpleLIFNode(nn.Module):
-    """简化的 LIF 神经元"""
-    def __init__(self, beta=1.0, v_threshold=1.0, v_reset=0.0):
-        super().__init__()
-        self.beta = beta
-        self.v_threshold = v_threshold
-        self.v_reset = v_reset
-        self.register_buffer('v', None)
-        
-    def forward(self, x):
-        if self.v is None:
-            self.v = torch.zeros_like(x)
-        self.v = self.beta * self.v + x
-        spike = (self.v >= self.v_threshold).float()
-        self.v = self.v - spike * self.v_threshold
-        return spike
-    
-    def reset(self):
-        self.v = None
+def _create_neuron(template, threshold, v_reset=None):
+    """从模板创建指定阈值的神经元
 
-
-def _create_neuron(template, threshold, v_reset=0.0):
-    """从模板创建指定阈值的神经元"""
+    默认使用软复位 (v_reset=None)，保留残差用于跨时间步实验
+    """
     if template is None:
-        return neuron.IFNode(
-            v_threshold=threshold, 
-            v_reset=v_reset,
-            surrogate_function=surrogate.ATan()
-        )
+        return SimpleIFNode(v_threshold=threshold, v_reset=v_reset)
     else:
         node = deepcopy(template)
         node.v_threshold = threshold
-        node.v_reset = v_reset
+        if hasattr(node, 'v_reset'):
+            node.v_reset = v_reset
         return node
 
 

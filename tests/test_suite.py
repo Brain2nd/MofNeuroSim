@@ -1,5 +1,5 @@
 """
-SNNTorch 核心测试套件 (Core Test Suite)
+MofNeuroSim 核心测试套件 (Core Test Suite)
 ======================================
 
 运行所有核心功能测试，验证 SNN 浮点运算的正确性。
@@ -17,13 +17,13 @@ SNNTorch 核心测试套件 (Core Test Suite)
 --------
 ```bash
 # 运行完整测试套件
-python SNNTorch/tests/test_suite.py
+python MofNeuroSim/tests/test_suite.py
 
 # 运行单项测试
-python SNNTorch/tests/test_suite.py --only logic_gates
+python MofNeuroSim/tests/test_suite.py --only logic_gates
 ```
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 许可: MIT License
 """
 import torch
@@ -32,9 +32,9 @@ import sys
 import argparse
 from typing import Tuple, List
 
-sys.path.insert(0, '/home/dgxspark/Desktop/HumanBrain')
+import sys; import os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from SNNTorch.atomic_ops import (
+from atomic_ops import (
     # 逻辑门
     ANDGate, ORGate, XORGate, NOTGate,
     # 算术单元
@@ -46,7 +46,7 @@ from SNNTorch.atomic_ops import (
     # Linear层
     SpikeFP8Linear_MultiPrecision,
 )
-from SNNTorch.atomic_ops.pulse_decoder import PulseFP16Decoder, PulseFP32Decoder
+from atomic_ops.pulse_decoder import PulseFP16Decoder, PulseFP32Decoder
 
 
 # ==============================================================================
@@ -477,7 +477,7 @@ def run_all_tests(only: str = None) -> bool:
     """运行所有测试"""
     
     print("=" * 70)
-    print("SNNTorch 核心测试套件")
+    print("MofNeuroSim 核心测试套件")
     print("=" * 70)
     
     tests = {
@@ -527,7 +527,7 @@ def run_all_tests(only: str = None) -> bool:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="SNNTorch 核心测试套件")
+    parser = argparse.ArgumentParser(description="MofNeuroSim 核心测试套件")
     parser.add_argument('--only', type=str, default=None,
                         help="只运行指定测试: logic_gates, arithmetic, encoder_decoder, multiplier, linear")
     args = parser.parse_args()

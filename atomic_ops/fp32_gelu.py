@@ -9,7 +9,7 @@ GELU(x) = x * Φ(x) ≈ x * σ(1.702 * x)
 使用快速近似: GELU(x) ≈ x * sigmoid(1.702 * x)
 这个近似在实践中非常准确且计算效率高。
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import torch
 import torch.nn as nn

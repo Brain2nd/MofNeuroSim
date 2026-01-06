@@ -6,7 +6,7 @@ Softmax(x_i) = exp(x_i) / sum(exp(x_j))
 
 使用已有的Exp、Adder和Divider组合实现。
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import torch
 import torch.nn as nn

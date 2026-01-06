@@ -18,8 +18,8 @@
 
 使用示例:
 ```python
-from SNNTorch.atomic_ops.vec_logic_gates import VecAdder
-from SNNTorch.atomic_ops.logic_gates import SimpleLIFNode
+from atomic_ops.vec_logic_gates import VecAdder
+from atomic_ops.logic_gates import SimpleLIFNode
 
 # 默认 IF 神经元 (理想数字逻辑)
 adder = VecAdder(bits=8)
@@ -29,15 +29,15 @@ lif_template = SimpleLIFNode(beta=0.9)
 adder_lif = VecAdder(bits=8, neuron_template=lif_template)
 ```
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import torch
 import torch.nn as nn
 from copy import deepcopy
-from spikingjelly.activation_based import neuron, surrogate
 
-# 从 logic_gates 导入 SimpleLIFNode 和辅助函数
-from .logic_gates import SimpleLIFNode, _create_neuron
+# 从 neurons 和 logic_gates 导入
+from .neurons import SimpleLIFNode
+from .logic_gates import _create_neuron
 
 
 # ==============================================================================

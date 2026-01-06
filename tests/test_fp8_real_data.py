@@ -1,7 +1,7 @@
 import sys
-sys.path.insert(0, "/home/dgxspark/Desktop/HumanBrain")
+import sys; import os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
-from SNNTorch.atomic_ops import PulseFloatingPointEncoder
+from atomic_ops import PulseFloatingPointEncoder
 
 def test_fp8_real_data():
     print("=== Testing PulseFloatingPointEncoder with Native FP8 Data (E4M3) ===\n")

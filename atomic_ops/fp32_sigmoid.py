@@ -6,7 +6,7 @@ sigmoid(x) = 1 / (1 + exp(-x))
 
 使用已有的Exp、Adder、Divider组合实现。
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import torch
 import torch.nn as nn

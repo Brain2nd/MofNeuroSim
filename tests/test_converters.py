@@ -9,7 +9,7 @@ Converters 模块测试 - 验证脉冲转换函数的正确性
 4. 批量处理
 5. 特殊值处理
 
-作者: HumanBrain Project
+作者: MofNeuroSim Project
 """
 import sys
 import os
