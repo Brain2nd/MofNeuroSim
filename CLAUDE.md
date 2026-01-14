@@ -20,8 +20,8 @@ pip install -e .
 # Run core test suite
 python tests/test_suite.py
 
-# Run specific test category
-python tests/test_suite.py --only logic_gates    # logic_gates, arithmetic, encoder_decoder, multiplier, linear
+# Run specific test category (options: logic_gates, arithmetic, encoder_decoder, multiplier, linear)
+python tests/test_suite.py --only logic_gates
 
 # Run 100% alignment verification
 python tests/test_all_precision_alignment.py
@@ -61,6 +61,8 @@ Float Input → [Encoder] → Pulse Sequence → [SNN Gates] → Pulse Sequence 
 | AND  | 1.5       | H(A + B - 1.5) |
 | OR   | 0.5       | H(A + B - 0.5) |
 | NOT  | 0.5       | H(1 - A - 0.5) |
+| XOR  | -         | OR(A,B) - AND(A,B) (3 neurons) |
+| MUX  | -         | OR(AND(A,S), AND(B,NOT(S))) |
 
 **Neuron Template System**: All components support `neuron_template` parameter to switch between IF (ideal digital) and LIF (physical simulation):
 ```python
@@ -105,6 +107,26 @@ adder_lif = SpikeFP32Adder(neuron_template=lif_template)
 | FP32 | Yes | Full suite: adder, mul, div, sqrt, exp, sigmoid, tanh, GELU, softmax, LayerNorm, RMSNorm |
 | FP64 | Yes | `SpikeFP64Adder`, `SpikeFP64Multiplier`, `SpikeFP64Divider`, `SpikeFP64Sqrt`, `SpikeFP64Exp` |
 
+## Converter Utilities
+
+The `atomic_ops/converters.py` module provides boundary conversion functions:
+```python
+from atomic_ops import (
+    float_to_fp8_bits, fp8_bits_to_float,     # FP8
+    float32_to_pulse, pulse_to_float32,       # FP32
+    float64_to_pulse, pulse_to_float64,       # FP64
+)
+```
+
+## Device Support
+
+All modules support both CPU and CUDA:
+```python
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+encoder = PulseFloatingPointEncoder().to(device)
+adder = SpikeFP32Adder().to(device)
+```
+
 ## Development Guidelines
 
 1. **Pure SNN Constraint**: Never use Python arithmetic in computation paths. Use:
@@ -118,3 +140,5 @@ adder_lif = SpikeFP32Adder(neuron_template=lif_template)
    - FP32 accumulation should achieve 100% bit-exact match with PyTorch
    - FP16 accumulation should achieve ~95% alignment
    - FP8 accumulation has inherent rounding limitations
+
+4. **State Management**: Call `.reset()` on stateful modules (accumulators, Linear layers) before processing new sequences to clear membrane potentials

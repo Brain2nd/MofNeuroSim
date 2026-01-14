@@ -129,7 +129,10 @@ Optimized gates for parallel bit-level operations:
 | Module | Operation | Precision |
 |--------|-----------|-----------|
 | `SpikeFP16Adder` | A + B | 16-bit |
-| `SpikeFP8ToFP16Converter` | FP8 → FP16 | Lossless |
+| `SpikeFP16MulToFP32` | A × B → FP32 | 16→32-bit |
+| `SpikeFP16Linear_MultiPrecision` | Wx + b | FP16/32 accum |
+| `FP8ToFP16Converter` | FP8 → FP16 | Lossless |
+| `FP16ToFP32Converter` | FP16 → FP32 | Lossless |
 
 #### FP32
 | Module | Operation | Notes |
@@ -137,6 +140,7 @@ Optimized gates for parallel bit-level operations:
 | `SpikeFP32Adder` | A + B | Bit-exact |
 | `SpikeFP32Multiplier` | A × B | Bit-exact |
 | `SpikeFP32Divider` | A ÷ B | Newton-Raphson |
+| `SpikeFP32Linear` | Wx + b | Bit-exact, FP32 accum |
 | `SpikeFP32Sqrt` | √x | Newton-Raphson |
 | `SpikeFP32Exp` | e^x | Taylor series |
 | `SpikeFP32Reciprocal` | 1/x | Newton-Raphson |
@@ -254,23 +258,98 @@ y_pulse = linear(x_pulse)  # [32, 128, 8]
 y = decoder(y_pulse)       # [32, 128]
 ```
 
+### FP16/FP32 Linear Layers
+
+```python
+from atomic_ops import (
+    SpikeFP16Linear_MultiPrecision,
+    SpikeFP32Linear,
+    float16_to_pulse, pulse_to_float16,
+    float32_to_pulse, pulse_to_float32
+)
+
+# FP16 Linear with FP32 accumulation (100% bit-exact)
+linear_fp16 = SpikeFP16Linear_MultiPrecision(
+    in_features=64,
+    out_features=32,
+    accum_precision='fp32'  # 'fp16' or 'fp32'
+)
+weights = torch.randn(32, 64, dtype=torch.float16)
+linear_fp16.set_weight_from_float(weights)
+
+x_pulse = float16_to_pulse(torch.randn(8, 64, dtype=torch.float16))
+y_pulse = linear_fp16(x_pulse)  # [8, 32, 16]
+y = pulse_to_float16(y_pulse)   # [8, 32]
+
+# FP32 Linear (100% bit-exact)
+linear_fp32 = SpikeFP32Linear(in_features=64, out_features=32)
+weights = torch.randn(32, 64, dtype=torch.float32)
+linear_fp32.set_weight_from_float(weights)
+
+x_pulse = float32_to_pulse(torch.randn(8, 64))
+y_pulse = linear_fp32(x_pulse)  # [8, 32, 32]
+y = pulse_to_float32(y_pulse)   # [8, 32]
+```
+
 ---
 
 ## 🔬 Physical Simulation with LIF Neurons
 
-For hardware simulation of MOF chips, we provide LIF (Leaky Integrate-and-Fire) variants:
+For hardware simulation of MOF chips, we provide IF/LIF neurons with **vectorized parameters**:
+
+### Neuron Types
+
+| Neuron | Equation | Use Case |
+|--------|----------|----------|
+| `SimpleIFNode` | V += I | Digital logic (bit-exact) |
+| `SimpleLIFNode` | V = β×V + I | Physical simulation |
+| `DynamicThresholdIFNode` | SAR ADC style | Float encoding |
+
+### Vectorized Parameter Support
+
+**Default behavior**: All gates use `_create_neuron` with `param_shape='auto'` (auto-vectorize on first forward), with bit-exact default values.
 
 ```python
-from atomic_ops import (
-    SimpleLIFNode,
-    # LIF-based gates with membrane leakage
+from atomic_ops import SimpleIFNode, SimpleLIFNode
+
+# Direct creation: threshold_shape=None (scalar broadcast)
+if_neuron = SimpleIFNode(v_threshold=1.0)
+
+# Enable auto-vectorization (used by _create_neuron in gates)
+if_neuron = SimpleIFNode(v_threshold=1.0, threshold_shape='auto')
+
+# Enable trainable parameters
+if_neuron = SimpleIFNode(
+    v_threshold=1.0,
+    threshold_shape='auto',      # Auto-detect from input (default)
+    trainable_threshold=True     # Learnable
 )
 
-# LIF neuron with configurable dynamics
-lif = SimpleLIFNode(
-    tau=10.0,    # Membrane time constant
-    v_reset=0.0  # Reset voltage
+# LIF with vectorized beta and threshold
+lif_neuron = SimpleLIFNode(
+    beta=0.9,                    # Membrane leakage factor
+    v_threshold=1.0,
+    param_shape='auto',          # Auto-detect shape (default)
+    trainable_beta=True,         # Learnable leakage
+    trainable_threshold=True     # Learnable threshold
 )
+```
+
+### neuron_template Mechanism
+
+All gates support `neuron_template` for unified IF/LIF switching:
+
+```python
+from atomic_ops import ANDGate, SimpleLIFNode, SpikeFP32Adder
+
+# Default: IF neurons (ideal digital logic)
+and_gate = ANDGate()
+adder = SpikeFP32Adder()
+
+# Physical simulation: LIF neurons
+lif_template = SimpleLIFNode(beta=0.9)
+and_gate_lif = ANDGate(neuron_template=lif_template)
+adder_lif = SpikeFP32Adder(neuron_template=lif_template)
 ```
 
 ### Robustness Testing
@@ -290,10 +369,22 @@ Tests include:
 
 Comparison with PyTorch `nn.Linear`:
 
+### FP8 Input/Output Linear (`SpikeFP8Linear_MultiPrecision`)
 | Accumulation | Alignment | Notes |
 |--------------|-----------|-------|
-| FP8 | ~50% | Per-step rounding |
-| FP16 | ~95% | Reduced error accumulation |
+| FP8 | ~38% | Per-step rounding |
+| FP16 | **100%** | FP32 accum → FP16 → FP8 |
+| **FP32** | **100%** | **Bit-exact match** |
+
+### FP16 Input/Output Linear (`SpikeFP16Linear_MultiPrecision`)
+| Accumulation | Alignment | Notes |
+|--------------|-----------|-------|
+| FP16 | ~95% | Per-step rounding |
+| **FP32** | **100%** | **Bit-exact match** |
+
+### FP32 Input/Output Linear (`SpikeFP32Linear`)
+| Accumulation | Alignment | Notes |
+|--------------|-----------|-------|
 | **FP32** | **100%** | **Bit-exact match** |
 
 ---
@@ -303,6 +394,11 @@ Comparison with PyTorch `nn.Linear`:
 We provide comprehensive tests for all components:
 
 ```bash
+# ★ Core test suite (recommended)
+python tests/test_suite.py                    # Run all core tests
+python tests/test_suite.py --only logic_gates # Test specific category
+python tests/test_suite.py --only linear      # Test Linear layers
+
 # Core arithmetic
 python tests/test_fp8_mul.py          # FP8 multiplication
 python tests/test_fp32_adder.py       # FP32 addition
@@ -346,8 +442,11 @@ MofNeuroSim/
 │   │
 │   ├── fp16_adder.py             # FP16 adder
 │   ├── fp16_components.py        # FP8↔FP16 converter
+│   ├── fp16_mul_to_fp32.py       # FP16×FP16→FP32 multiplier
+│   ├── fp16_linear.py            # FP16 linear (multi-precision)
 │   │
 │   ├── fp32_adder.py             # FP32 adder
+│   ├── fp32_linear.py            # FP32 linear layer
 │   ├── fp32_mul.py               # FP32 multiplier
 │   ├── fp32_div.py               # FP32 divider
 │   ├── fp32_sqrt.py              # FP32 square root
@@ -369,12 +468,17 @@ MofNeuroSim/
 │   ├── fp64_exp.py               # FP64 exponential
 │   │
 │   ├── sign_bit.py               # Sign detection neuron
-│   └── dynamic_if.py             # Dynamic threshold IF
+│   ├── dynamic_if.py             # Dynamic threshold IF
+│   │
+│   ├── dual_rail_gates.py        # Dual-rail logic gates
+│   └── dual_rail/                # Dual-rail logic components
+│       └── base.py               # Base classes for dual-rail
 │
 ├── models/                        # SNN inference models
 │   └── mnist_snn_infer.py        # MNIST MLP example
 │
 ├── tests/                         # Comprehensive test suite
+│   ├── test_suite.py             # ★ Core test suite (recommended)
 │   ├── test_logic_gates.py       # Gate correctness
 │   ├── test_vec_logic_gates.py   # Vectorized gates
 │   ├── test_fp8_*.py             # FP8 tests

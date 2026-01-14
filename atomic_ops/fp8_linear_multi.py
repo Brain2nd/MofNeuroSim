@@ -93,22 +93,23 @@ from .fp8_mul_to_fp32 import SpikeFP8MulToFP32
 
 
 class SpikeFP8Linear_MultiPrecision(nn.Module):
-    """多精度 SNN Linear 层
-    
+    """FP8 Linear 层 - 支持不同中间累加精度
+
     Y = X @ W^T，其中 X 和 W 都是 FP8 脉冲编码
-    
+
+    输入输出始终为 FP8，中间累加精度可选择以平衡精度和性能。
+
     参数:
         in_features: 输入特征维度
         out_features: 输出特征维度
-        accum_precision: 累加和输出精度，'fp8' / 'fp16' / 'fp32'
-            - 'fp8': 输出 FP8 脉冲 [..., out_features, 8]，与 PyTorch FP8 Linear 对齐
-            - 'fp16': 输出 FP16 脉冲 [..., out_features, 16]，与 PyTorch FP16 Linear 对齐
-            - 'fp32': 输出 FP32 脉冲 [..., out_features, 32]，与 PyTorch FP32 Linear 对齐
+        accum_precision: 中间累加精度，'fp8' / 'fp16' / 'fp32'
+            - 'fp32': FP32累加 → FP8输出（最高精度，推荐）
+            - 'fp16': FP16累加 → FP8输出（中等精度）
+            - 'fp8':  FP8累加 → FP8输出（最快但精度损失大）
         mode: 累加模式，'sequential' 或 'tree'（仅FP8模式支持tree）
-    
-    注意:
-        - 所有模式都使用 FP32 乘法器（避免乘法阶段舍入）
-        - 输出精度与 accum_precision 一致，不强制转回 FP8
+
+    架构:
+        输入[FP8] → FP8×FP8→FP32乘法 → 累加[accum_precision] → 转换 → 输出[FP8]
     """
     def __init__(self, in_features, out_features, accum_precision='fp8', mode='sequential'):
         super().__init__()
@@ -124,15 +125,25 @@ class SpikeFP8Linear_MultiPrecision(nn.Module):
         self.mul_fp32 = SpikeFP8MulToFP32()
         
         if accum_precision == 'fp32':
-            # FP32 累加模式：输出FP32脉冲
-            self.fp32_adder = SpikeFP32Adder()
+            # FP32 累加模式：每次累加使用独立实例
+            self.fp32_adders = nn.ModuleList([
+                SpikeFP32Adder() for _ in range(max(1, in_features - 1))
+            ])
+            # 输出转换：FP32 → FP8
+            self.output_converter = FP32ToFP8Converter()
         elif accum_precision == 'fp16':
-            # FP16 模式：FP32累加后转FP16，输出FP16脉冲
-            self.fp32_adder = SpikeFP32Adder()
+            # FP16 模式：每次累加使用独立实例
+            self.fp32_adders = nn.ModuleList([
+                SpikeFP32Adder() for _ in range(max(1, in_features - 1))
+            ])
             self.fp32_to_fp16 = FP32ToFP16Converter()
+            # 输出转换：FP16 → FP8
+            self.output_converter = FP16ToFP8Converter()
         else:
-            # FP8 累加模式：输出FP8脉冲
-            self.fp32_to_fp8 = FP32ToFP8Converter()
+            # FP8 累加模式：每次转换和累加使用独立实例
+            self.fp32_to_fp8_converters = nn.ModuleList([
+                FP32ToFP8Converter() for _ in range(in_features)
+            ])
             self.num_adders = in_features - 1 if in_features > 1 else 0
             if mode == 'sequential':
                 self.adders = nn.ModuleList([
@@ -168,56 +179,52 @@ class SpikeFP8Linear_MultiPrecision(nn.Module):
         Args:
             x: [..., in_features, 8] 输入 FP8 脉冲
         Returns:
-            - FP8模式: [..., out_features, 8] 输出 FP8 脉冲
-            - FP16模式: [..., out_features, 16] 输出 FP16 脉冲
-            - FP32模式: [..., out_features, 32] 输出 FP32 脉冲
+            [..., out_features, 8] 输出 FP8 脉冲（所有模式输出都是FP8）
         """
         assert self.weight_pulse is not None, "需要先调用 set_weight_from_float"
-        
+        self.reset_all()  # 高层组件统一reset
+
         # 扩展输入以进行广播乘法
         # x: [..., in_features, 8] -> [..., 1, in_features, 8]
         # weight: [out_features, in_features, 8]
         x_expanded = x.unsqueeze(-3)
-        
+
         # 所有模式都使用FP32乘法器（避免乘法阶段舍入）
         products_fp32 = self.mul_fp32(x_expanded, self.weight_pulse)
-        
+
         if self.accum_precision == 'fp32':
-            # FP32 模式：FP32累加 → 输出FP32脉冲
+            # FP32 模式：FP32累加 → FP32→FP8 → 输出FP8脉冲
             if self.in_features == 1:
-                return products_fp32.squeeze(-2)
+                return self.output_converter(products_fp32.squeeze(-2))
             return self._fp32_accumulate(products_fp32)
         elif self.accum_precision == 'fp16':
-            # FP16 模式：FP32转FP16 → FP16累加 → 输出FP16脉冲
+            # FP16 模式：FP32累加 → FP32→FP16 → FP16→FP8 → 输出FP8脉冲
             if self.in_features == 1:
-                self.fp32_to_fp16.reset()
-                return self.fp32_to_fp16(products_fp32.squeeze(-2))
+                fp16_result = self.fp32_to_fp16(products_fp32.squeeze(-2))
+                return self.output_converter(fp16_result)
             return self._fp16_accumulate(products_fp32)
         else:
             # FP8 模式：FP32转FP8 → FP8累加 → 输出FP8脉冲
             if self.in_features == 1:
-                self.fp32_to_fp8.reset()
-                return self.fp32_to_fp8(products_fp32.squeeze(-2))
+                return self.fp32_to_fp8_converters[0](products_fp32.squeeze(-2))
             return self._fp8_accumulate(products_fp32)
     
     def _fp8_accumulate(self, products_fp32):
         """FP8 累加：FP32转FP8 → FP8累加 → 输出FP8脉冲"""
-        # 将所有FP32乘积转换为FP8
+        # 将所有FP32乘积转换为FP8（使用独立实例）
         products_fp8 = []
         for i in range(self.in_features):
-            self.fp32_to_fp8.reset()
-            p_fp8 = self.fp32_to_fp8(products_fp32[..., i, :])
+            p_fp8 = self.fp32_to_fp8_converters[i](products_fp32[..., i, :])
             products_fp8.append(p_fp8)
-        
+
         if self.mode == 'sequential':
-            # 顺序累加
+            # 顺序累加（使用独立实例，无需循环内reset）
             acc = products_fp8[0]
             for i in range(1, self.in_features):
-                self.adders[i-1].reset()
                 acc = self.adders[i-1](acc, products_fp8[i])
             return acc
         else:
-            # 树形累加
+            # 树形累加（使用独立实例，无需循环内reset）
             current = products_fp8
             for level, level_adders in enumerate(self.tree_adders):
                 next_level = []
@@ -225,7 +232,6 @@ class SpikeFP8Linear_MultiPrecision(nn.Module):
                 i = 0
                 while i < len(current):
                     if i + 1 < len(current):
-                        level_adders[adder_idx].reset()
                         summed = level_adders[adder_idx](current[i], current[i+1])
                         next_level.append(summed)
                         adder_idx += 1
@@ -235,56 +241,44 @@ class SpikeFP8Linear_MultiPrecision(nn.Module):
                         i += 1
                 current = next_level
             return current[0]
-    
+
     def _fp16_accumulate(self, products_fp32):
-        """FP16 模式：FP32累加 → FP32→FP16转换 → 输出FP16脉冲
-        
-        与 PyTorch FP16 Linear 对齐（GPU上内部使用FP32累加）
+        """FP16 中间精度：FP32累加 → FP16 → FP8输出
+
+        使用FP32累加（GPU上FP16 Linear内部也用FP32累加），最后转回FP8
         """
-        # FP32 累加（与 _fp32_accumulate 相同）
+        # FP32 累加（使用独立实例）
         acc = products_fp32[..., 0, :]
-        
+
         for i in range(1, self.in_features):
-            self.fp32_adder.reset()
-            acc = self.fp32_adder(acc, products_fp32[..., i, :])
-        
-        # 最后转换为 FP16
-        self.fp32_to_fp16.reset()
+            acc = self.fp32_adders[i-1](acc, products_fp32[..., i, :])
+
+        # FP32 → FP16 → FP8 输出
         result_fp16 = self.fp32_to_fp16(acc)
-        
-        return result_fp16
-    
+        return self.output_converter(result_fp16)
+
     def _fp32_accumulate(self, products_fp32):
-        """FP32 累加：FP32累加 → 输出FP32脉冲
-        
+        """FP32 累加：FP32累加 → FP32→FP8 → 输出FP8脉冲
+
         输入是 FP32 脉冲（由 FP8MulToFP32 产生）
         """
         # 第一个乘积
         acc = products_fp32[..., 0, :]
-        
-        # 逐个累加（FP32 精度）
+
+        # 逐个累加（使用独立实例，无需循环内reset）
         for i in range(1, self.in_features):
-            self.fp32_adder.reset()
-            acc = self.fp32_adder(acc, products_fp32[..., i, :])
-        
-        # 输出FP32脉冲（不转回FP8）
-        return acc
-    
+            acc = self.fp32_adders[i-1](acc, products_fp32[..., i, :])
+
+        # 转换为FP8输出
+        return self.output_converter(acc)
+
+    def reset_all(self):
+        """递归reset所有子模块"""
+        for module in self.modules():
+            if module is not self and hasattr(module, 'reset'):
+                module.reset()
+
     def reset(self):
-        """重置所有内部状态"""
-        if self.accum_precision == 'fp32':
-            self.fp32_adder.reset()
-        elif self.accum_precision == 'fp16':
-            self.fp32_adder.reset()
-            self.fp32_to_fp16.reset()
-        else:
-            # FP8 累加模式
-            self.fp32_to_fp8.reset()
-            if self.mode == 'sequential':
-                for adder in self.adders:
-                    adder.reset()
-            else:
-                for level_adders in self.tree_adders:
-                    for adder in level_adders:
-                        adder.reset()
+        """向后兼容"""
+        self.reset_all()
 

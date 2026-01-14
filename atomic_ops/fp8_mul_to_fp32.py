@@ -25,9 +25,20 @@ FP32:     [S | E7..E0 | M22..M0], bias=127
 """
 import torch
 import torch.nn as nn
-from .logic_gates import (ANDGate, ORGate, XORGate, NOTGate, MUXGate, 
-                          HalfAdder, FullAdder, RippleCarryAdder, ORTree,
-                          ArrayMultiplier4x4_Strict)
+# 使用向量化基础门以保持与 FP16/FP32 组件的一致性
+from .vec_logic_gates import (
+    VecAND as ANDGate,
+    VecOR as ORGate,
+    VecXOR as XORGate,
+    VecNOT as NOTGate,
+    VecMUX as MUXGate,
+    VecHalfAdder as HalfAdder,
+    VecFullAdder as FullAdder,
+    VecAdder as RippleCarryAdder,
+    VecORTree as ORTree
+)
+# 保留专用组件
+from .logic_gates import ArrayMultiplier4x4_Strict
 from .fp32_components import SubtractorNBit
 
 
@@ -69,10 +80,16 @@ class SpikeFP8MulToFP32(nn.Module):
         # 4x4 尾数乘法器（输出8位）
         self.mant_mul = ArrayMultiplier4x4_Strict(neuron_template=nt)
         
-        # 8位指数加法
+        # 8位指数加法 - 每次使用独立实例（避免复用）
+        # 用于 subnormal 路径的 E+120 计算
+        self.exp_add_normal_a = RippleCarryAdder(bits=8, neuron_template=nt)
+        self.exp_add_normal_b = RippleCarryAdder(bits=8, neuron_template=nt)
+        # 用于 subnormal 路径的 E_eff 求和
+        self.exp_sum_subnorm = RippleCarryAdder(bits=8, neuron_template=nt)
+        # 用于主计算路径
         self.exp_add_ab = RippleCarryAdder(bits=8, neuron_template=nt)
         self.exp_add_bias = RippleCarryAdder(bits=8, neuron_template=nt)
-        
+
         # 指数调整（归一化时+1）
         self.exp_norm_inc = RippleCarryAdder(bits=8, neuron_template=nt)
         
@@ -155,8 +172,8 @@ class SpikeFP8MulToFP32(nn.Module):
         Returns:
             [..., 32] FP32 脉冲 [S, E7..E0, M22..M0]
         """
-        self.reset()
-        
+        self.reset_all()  # 高层组件统一reset
+
         # 支持广播
         A, B = torch.broadcast_tensors(A, B)
         
@@ -314,12 +331,12 @@ class SpikeFP8MulToFP32(nn.Module):
         e_a_8bit_lsb = torch.cat([e_a[..., 3:4], e_a[..., 2:3], e_a[..., 1:2], e_a[..., 0:1], 
                                    zeros, zeros, zeros, zeros], dim=-1)
         const_120_lsb = torch.cat([zeros, zeros, zeros, ones, ones, ones, ones, zeros], dim=-1)
-        e_normal_a_lsb, _ = self.exp_add_ab(e_a_8bit_lsb, const_120_lsb)
+        e_normal_a_lsb, _ = self.exp_add_normal_a(e_a_8bit_lsb, const_120_lsb)
         e_normal_a = e_normal_a_lsb.flip(-1)
         
         e_b_8bit_lsb = torch.cat([e_b[..., 3:4], e_b[..., 2:3], e_b[..., 1:2], e_b[..., 0:1],
                                    zeros, zeros, zeros, zeros], dim=-1)
-        e_normal_b_lsb, _ = self.exp_add_bias(e_b_8bit_lsb, const_120_lsb)
+        e_normal_b_lsb, _ = self.exp_add_normal_b(e_b_8bit_lsb, const_120_lsb)
         e_normal_b = e_normal_b_lsb.flip(-1)
         
         # 选择有效 FP32 指数 (纯SNN MUX门)
@@ -339,7 +356,7 @@ class SpikeFP8MulToFP32(nn.Module):
         # 使用加法器计算 E_a_eff + E_b_eff
         e_eff_a_lsb = e_eff_a.flip(-1)
         e_eff_b_lsb = e_eff_b.flip(-1)
-        exp_sum_raw_lsb, _ = self.exp_norm_inc(e_eff_a_lsb, e_eff_b_lsb)
+        exp_sum_raw_lsb, _ = self.exp_sum_subnorm(e_eff_a_lsb, e_eff_b_lsb)
         
         # - 127 = + (-127) = + 129 (8位二进制补码, 但我们用 9 位所以用加法)
         # 更简单: 使用减法
@@ -492,45 +509,13 @@ class SpikeFP8MulToFP32(nn.Module):
         
         return fp32_pulse
     
+    def reset_all(self):
+        """递归reset所有子模块"""
+        for module in self.modules():
+            if module is not self and hasattr(module, 'reset'):
+                module.reset()
+
     def reset(self):
-        self.sign_xor.reset()
-        for g in self.e_a_or: g.reset()
-        for g in self.e_b_or: g.reset()
-        self.e_a_nonzero_or.reset()
-        self.e_b_nonzero_or.reset()
-        # M≠0 检测门
-        self.m_a_or_01.reset()
-        self.m_a_or_all.reset()
-        self.m_b_or_01.reset()
-        self.m_b_or_all.reset()
-        # 隐藏位 OR 门
-        self.hidden_a_or.reset()
-        self.hidden_b_or.reset()
-        # 零检测 OR 门
-        self.is_zero_or.reset()
-        # 乘法器和加法器
-        self.mant_mul.reset()
-        self.exp_add_ab.reset()
-        self.exp_add_bias.reset()
-        self.exp_norm_inc.reset()
-        # 指数调整减法器
-        self.exp_adj_sub.reset()
-        self.adj_ha0.reset()
-        self.adj_ha1.reset()
-        self.adj_or.reset()
-        for mux in self.zero_mux_e: mux.reset()
-        for mux in self.zero_mux_m: mux.reset()
-        # 纯SNN NOT门
-        self.not_e_a_nonzero.reset()
-        self.not_e_b_nonzero.reset()
-        self.not_m2_a.reset()
-        self.not_m1_a.reset()
-        self.not_m2_b.reset()
-        self.not_m1_b.reset()
-        self.not_is_a_subnormal.reset()
-        self.not_is_b_subnormal.reset()
-        self.not_m_a_or.reset()
-        self.not_m_b_or.reset()
-        self.not_needs_norm.reset()
-        self.adj_xor.reset()
+        """向后兼容"""
+        self.reset_all()
 

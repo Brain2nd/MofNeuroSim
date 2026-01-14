@@ -38,10 +38,10 @@ class ComparatorNBit(nn.Module):
         # 前缀逻辑有依赖，使用树归约
         self.eq_tree = VecANDTree(neuron_template=nt)  # 最终 a_eq_b
         
-        # 用于 a_gt_b 的逐位计算（有依赖，需要循环）
+        # 用于 a_gt_b 的逐位计算（有依赖，需要独立实例）
         self.eq_prefix_and = nn.ModuleList([VecAND(neuron_template=nt) for _ in range(max(1, bits - 1))])
-        self.result_and = VecAND(neuron_template=nt)
-        self.result_or = VecOR(neuron_template=nt)
+        self.result_and = nn.ModuleList([VecAND(neuron_template=nt) for _ in range(max(1, bits - 1))])
+        self.result_or = nn.ModuleList([VecOR(neuron_template=nt) for _ in range(max(1, bits - 1))])
         
     def forward(self, A, B):
         """A, B: [..., bits] (MSB first)"""
@@ -65,9 +65,9 @@ class ComparatorNBit(nn.Module):
         a_gt_b = gt_all[..., 0:1]
         
         for i in range(1, n):
-            term = self.result_and(eq_prefix, gt_all[..., i:i+1])
-            a_gt_b = self.result_or(a_gt_b, term)
-            
+            term = self.result_and[i-1](eq_prefix, gt_all[..., i:i+1])
+            a_gt_b = self.result_or[i-1](a_gt_b, term)
+
             if i < n - 1:
                 eq_prefix = self.eq_prefix_and[i-1](eq_prefix, eq_all[..., i:i+1])
         
@@ -80,8 +80,8 @@ class ComparatorNBit(nn.Module):
         self.vec_gt_and.reset()
         self.eq_tree.reset()
         for g in self.eq_prefix_and: g.reset()
-        self.result_and.reset()
-        self.result_or.reset()
+        for g in self.result_and: g.reset()
+        for g in self.result_or: g.reset()
 
 
 class Comparator5Bit(ComparatorNBit):
@@ -559,7 +559,10 @@ class FP16ToFP8Converter(nn.Module):
         self.not_is_overflow = NOTGate(neuron_template=nt)
         
         # ===== 纯SNN MUX门 (选择最终结果) =====
+        # 用于构建 subnorm_exp（第一次使用）
         self.mux_sub_norm_e = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(4)])
+        # 用于最终 e_sub_or_norm 选择（第二次使用，独立实例）
+        self.mux_sub_norm_e_final = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(4)])
         self.mux_underflow_e = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(4)])
         self.mux_overflow_e = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(4)])
         self.mux_sub_norm_m = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(3)])
@@ -835,8 +838,8 @@ class FP16ToFP8Converter(nn.Module):
             e_norm = exp_after_round[..., i:i+1]
             # Subnormal 输出（包括 exp=8 溢出到 E=1 的情况）
             e_sub = subnorm_exp[..., i:i+1]
-            # 选择 subnorm vs normal (纯SNN MUX门)
-            e_sub_or_norm = self.mux_sub_norm_e[i](is_subnorm_output_with_8, e_sub, e_norm)
+            # 选择 subnorm vs normal (纯SNN MUX门，使用独立实例)
+            e_sub_or_norm = self.mux_sub_norm_e_final[i](is_subnorm_output_with_8, e_sub, e_norm)
             # 真正下溢 -> 0 (纯SNN MUX门)
             e_underflow = self.mux_underflow_e[i](is_true_underflow, zero_exp[..., i:i+1], e_sub_or_norm)
             # 溢出 -> NaN (纯SNN MUX门)

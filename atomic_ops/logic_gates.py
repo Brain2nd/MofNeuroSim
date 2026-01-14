@@ -93,25 +93,31 @@ from .neurons import SimpleIFNode, SimpleLIFNode
 # SimpleLIFNode 和 SimpleIFNode 已从 .neurons 导入
 
 
-def _create_neuron(template, threshold, v_reset=None):
+def _create_neuron(template, threshold, v_reset=None, param_shape='auto'):
     """从模板创建指定阈值的神经元
 
     Args:
         template: 神经元模板，None 则创建默认 IF 神经元
-        threshold: 目标阈值
+        threshold: 目标阈值 (float 或 Tensor)
         v_reset: 复位电压 (None=软复位, 数值=硬复位)
                  默认为 None (软复位)，保留残差用于跨时间步实验
+        param_shape: 参数形状 ('auto'=延迟初始化(默认), None=标量广播, tuple=指定形状)
 
     Returns:
         配置好的神经元实例
     """
     if template is None:
-        return SimpleIFNode(v_threshold=threshold, v_reset=v_reset)
+        return SimpleIFNode(v_threshold=threshold, v_reset=v_reset,
+                           threshold_shape=param_shape)
     else:
         node = deepcopy(template)
+        # 使用 property setter - 支持标量和张量
         node.v_threshold = threshold
         if hasattr(node, 'v_reset'):
             node.v_reset = v_reset
+        # 传播 param_shape 用于延迟初始化
+        if hasattr(node, 'param_shape') and param_shape is not None:
+            node.param_shape = param_shape
         return node
 
 
@@ -120,9 +126,13 @@ def _create_neuron(template, threshold, v_reset=None):
 # ==============================================================================
 
 class BaseLogicGate(nn.Module):
-    """所有 SNN 逻辑门的基类"""
+    """所有 SNN 逻辑门的基类 - 支持集中式reset"""
     def __init__(self):
         super().__init__()
+
+    def _reset(self):
+        """内部reset方法 - 由父组件调用"""
+        self.reset()
 
 # ==============================================================================
 # 基础逻辑门
@@ -155,11 +165,18 @@ class ANDGate(BaseLogicGate):
         self.node = _create_neuron(neuron_template, threshold=1.5)
         
     def forward(self, x_a, x_b):
-        self.reset()
+        # NOTE: reset由父组件统一调用，此处不再自动reset
         return self.node(x_a + x_b)
-        
+
     def reset(self):
         self.node.reset()
+
+    def _reset(self):
+        """内部reset - 由父组件调用"""
+        if hasattr(self.node, '_reset'):
+            self.node._reset()
+        else:
+            self.node.reset()
 
 
 class ORGate(BaseLogicGate):
@@ -189,55 +206,66 @@ class ORGate(BaseLogicGate):
         self.node = _create_neuron(neuron_template, threshold=0.5)
         
     def forward(self, x_a, x_b):
-        self.reset()
         return self.node(x_a + x_b)
 
     def reset(self):
         self.node.reset()
 
+    def _reset(self):
+        if hasattr(self.node, '_reset'):
+            self.node._reset()
+        else:
+            self.node.reset()
+
 
 class XORGate(BaseLogicGate):
     """XOR 门 - 纯 SNN 实现 (无非法减法)
-    
+
     **原理**:
     XOR(A, B) = (A AND NOT B) OR (NOT A AND B)
-    
+
     使用内部实例化的 neuromorphic NOTGate 来生成 NOT 信号，
     而不是使用 `1-x` 数学作弊。
-    
+
     门电路计数: 2 NOT + 2 AND + 1 OR = 5 神经元
-    
+
     Args:
         neuron_template: 神经元模板
     """
     def __init__(self, neuron_template=None):
         super().__init__()
-        # 内部实例化 NOT 门
-        self.not_gate = NOTGate(neuron_template)
+        # 内部实例化 NOT 门 - 使用两个独立实例避免状态累积
+        self.not_a_gate = NOTGate(neuron_template)
+        self.not_b_gate = NOTGate(neuron_template)
         # 组合逻辑
         self.and1 = _create_neuron(neuron_template, threshold=1.5)  # A AND NOT_B
         self.and2 = _create_neuron(neuron_template, threshold=1.5)  # NOT_A AND B
         self.or_out = _create_neuron(neuron_template, threshold=0.5)  # 输出 OR
-        
+
     def forward(self, x_a, x_b):
-        self.reset()
-        
-        # 使用 SNN 门生成反相信号
-        not_a = self.not_gate(x_a)
-        not_b = self.not_gate(x_b)
-        
+        # 使用 SNN 门生成反相信号 - 每个输入使用独立的NOT门
+        not_a = self.not_a_gate(x_a)
+        not_b = self.not_b_gate(x_b)
+
         # XOR = (A AND NOT_B) OR (NOT_A AND B)
         term1 = self.and1(x_a + not_b)
         term2 = self.and2(not_a + x_b)
         out_spike = self.or_out(term1 + term2)
-        
+
         return out_spike
 
     def reset(self):
-        self.not_gate.reset()
+        self.not_a_gate.reset()
+        self.not_b_gate.reset()
         self.and1.reset()
         self.and2.reset()
         self.or_out.reset()
+
+    def _reset(self):
+        for gate in [self.not_a_gate, self.not_b_gate]:
+            gate._reset() if hasattr(gate, '_reset') else gate.reset()
+        for node in [self.and1, self.and2, self.or_out]:
+            node._reset() if hasattr(node, '_reset') else node.reset()
 
 
 class NOTGate(BaseLogicGate):
@@ -264,12 +292,18 @@ class NOTGate(BaseLogicGate):
         self.node = _create_neuron(neuron_template, threshold=1.0)
         
     def forward(self, x):
-        self.reset()
         # 物理模拟: Bias(1.5) + Inhibitory Input(-x)
         return self.node(1.5 - x)
-    
+
     def reset(self):
         self.node.reset()
+
+    def _reset(self):
+        if hasattr(self.node, '_reset'):
+            self.node._reset()
+        else:
+            self.node.reset()
+
 
 class XNORGate(nn.Module):
     """XNOR门：当两个输入相同时输出1
@@ -288,19 +322,23 @@ class XNORGate(nn.Module):
         self.or1 = ORGate(neuron_template)
         
     def forward(self, a, b):
-        self.reset()
         ab = self.and1(a, b)
         na = self.not_a(a)
         nb = self.not_b(b)
         na_nb = self.and2(na, nb)
         return self.or1(ab, na_nb)
-    
+
     def reset(self):
         self.not_a.reset()
         self.not_b.reset()
         self.and1.reset()
         self.and2.reset()
         self.or1.reset()
+
+    def _reset(self):
+        for m in [self.not_a, self.not_b, self.and1, self.and2, self.or1]:
+            m._reset() if hasattr(m, '_reset') else m.reset()
+
 
 class AND4Gate(nn.Module):
     """四输入AND门
@@ -315,39 +353,49 @@ class AND4Gate(nn.Module):
         self.and3 = ANDGate(neuron_template)
         
     def forward(self, a, b, c, d):
-        self.reset()
         ab = self.and1(a, b)
         cd = self.and2(c, d)
         return self.and3(ab, cd)
-    
+
     def reset(self):
         self.and1.reset()
         self.and2.reset()
         self.and3.reset()
 
+    def _reset(self):
+        for m in [self.and1, self.and2, self.and3]:
+            m._reset() if hasattr(m, '_reset') else m.reset()
+
+
 class SpikeDetector(nn.Module):
     """脉冲检测器：当输入>=1时输出1，否则输出0
     使用阈值为0.5的IF/LIF神经元
-    
+
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
     """
     def __init__(self, neuron_template=None):
         super().__init__()
         self.node = _create_neuron(neuron_template, threshold=0.5)
-        
+
     def forward(self, x):
-        self.reset()
+        # NOTE: reset由父组件统一调用，此处不再自动reset
         return self.node(x)
-    
+
     def reset(self):
         self.node.reset()
+
+    def _reset(self):
+        if hasattr(self.node, '_reset'):
+            self.node._reset()
+        else:
+            self.node.reset()
 
 class MUXGate(nn.Module):
     """脉冲MUX选择器：MUX(S, A, B) = OR(AND(S, A), AND(NOT_S, B))
     当S=1时选择A，S=0时选择B
     纯SNN实现：使用NOTGate代替直接的1-x操作
-    
+
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
     """
@@ -357,23 +405,27 @@ class MUXGate(nn.Module):
         self.and1 = ANDGate(neuron_template)   # S AND A
         self.and2 = ANDGate(neuron_template)   # NOT_S AND B
         self.or1 = ORGate(neuron_template)
-        
+
     def forward(self, s, a, b):
-        self.reset()
+        # NOTE: reset由父组件统一调用，此处不再自动reset
         ns = self.not_s(s)
         sa = self.and1(s, a)
         nsb = self.and2(ns, b)
         return self.or1(sa, nsb)
-    
+
     def reset(self):
         self.not_s.reset()
         self.and1.reset()
         self.and2.reset()
         self.or1.reset()
 
+    def _reset(self):
+        for m in [self.not_s, self.and1, self.and2, self.or1]:
+            m._reset() if hasattr(m, '_reset') else m.reset()
+
 class OR3Gate(nn.Module):
     """三输入OR门
-    
+
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
     """
@@ -381,15 +433,19 @@ class OR3Gate(nn.Module):
         super().__init__()
         self.or1 = ORGate(neuron_template)
         self.or2 = ORGate(neuron_template)
-        
+
     def forward(self, a, b, c):
-        self.reset()
+        # NOTE: reset由父组件统一调用，此处不再自动reset
         ab = self.or1(a, b)
         return self.or2(ab, c)
-    
+
     def reset(self):
         self.or1.reset()
         self.or2.reset()
+
+    def _reset(self):
+        for m in [self.or1, self.or2]:
+            m._reset() if hasattr(m, '_reset') else m.reset()
 
 # ==============================================================================
 # 算术单元
@@ -397,13 +453,13 @@ class OR3Gate(nn.Module):
 
 class HalfAdder(nn.Module):
     """半加器 - 两个 1 位输入的加法
-    
+
     **数学公式**:
     ```
     S = A ⊕ B        (和，XOR)
     C = A ∧ B        (进位，AND)
     ```
-    
+
     **真值表**:
     | A | B | S | C |
     |---|---|---|---|
@@ -411,12 +467,12 @@ class HalfAdder(nn.Module):
     | 0 | 1 | 1 | 0 |
     | 1 | 0 | 1 | 0 |
     | 1 | 1 | 0 | 1 |
-    
+
     门电路计数: 1 XOR + 1 AND = 3 IF 神经元
-    
+
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
-    
+
     Returns:
         (S, C): 和位与进位位
     """
@@ -424,27 +480,31 @@ class HalfAdder(nn.Module):
         super().__init__()
         self.xor1 = XORGate(neuron_template)
         self.and1 = ANDGate(neuron_template)
-        
+
     def forward(self, a, b):
-        self.reset()
+        # NOTE: reset由父组件统一调用，此处不再自动reset
         s = self.xor1(a, b)   # S = A ⊕ B
         c = self.and1(a, b)   # C = A ∧ B
         return s, c
-        
+
     def reset(self):
         self.xor1.reset()
         self.and1.reset()
 
+    def _reset(self):
+        for m in [self.xor1, self.and1]:
+            m._reset() if hasattr(m, '_reset') else m.reset()
+
 
 class FullAdder(nn.Module):
     """全加器 - 三个 1 位输入的加法 (含进位输入)
-    
+
     **数学公式**:
     ```
     S = A ⊕ B ⊕ Cin
     Cout = (A ∧ B) ∨ ((A ⊕ B) ∧ Cin)
     ```
-    
+
     **电路结构**:
     ```
     A ──┬──[XOR1]──┬──[XOR2]── S
@@ -455,12 +515,12 @@ class FullAdder(nn.Module):
     B ──┘
     Cin ──────────────┘
     ```
-    
+
     门电路计数: 2 XOR + 2 AND + 1 OR = 7 IF 神经元
-    
+
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
-    
+
     Returns:
         (S, Cout): 和位与进位输出
     """
@@ -471,9 +531,9 @@ class FullAdder(nn.Module):
         self.and1 = ANDGate(neuron_template)
         self.and2 = ANDGate(neuron_template)
         self.or1 = ORGate(neuron_template)
-        
+
     def forward(self, a, b, cin):
-        self.reset()
+        # NOTE: reset由父组件统一调用，此处不再自动reset
         s1 = self.xor1(a, b)       # A ⊕ B
         sum_out = self.xor2(s1, cin)  # S = (A ⊕ B) ⊕ Cin
         c1 = self.and1(a, b)       # A ∧ B
@@ -487,6 +547,10 @@ class FullAdder(nn.Module):
         self.and1.reset()
         self.and2.reset()
         self.or1.reset()
+
+    def _reset(self):
+        for m in [self.xor1, self.xor2, self.and1, self.and2, self.or1]:
+            m._reset() if hasattr(m, '_reset') else m.reset()
 
 
 class RippleCarryAdder(nn.Module):
@@ -552,6 +616,11 @@ class RippleCarryAdder(nn.Module):
         for adder in self.adders:
             adder.reset()
 
+    def _reset(self):
+        for adder in self.adders:
+            adder._reset() if hasattr(adder, '_reset') else adder.reset()
+
+
 class ORTree(nn.Module):
     """N输入OR树，纯SNN实现
     
@@ -599,6 +668,10 @@ class ORTree(nn.Module):
         for gate in self.or_gates:
             gate.reset()
 
+    def _reset(self):
+        for gate in self.or_gates:
+            gate._reset() if hasattr(gate, '_reset') else gate.reset()
+
 
 class ANDTree(nn.Module):
     """N输入AND树，纯SNN实现
@@ -641,6 +714,10 @@ class ANDTree(nn.Module):
     def reset(self):
         for gate in self.and_gates:
             gate.reset()
+
+    def _reset(self):
+        for gate in self.and_gates:
+            gate._reset() if hasattr(gate, '_reset') else gate.reset()
 
 
 class FirstSpikeDetector(nn.Module):
@@ -697,6 +774,14 @@ class FirstSpikeDetector(nn.Module):
             gate.reset()
         for gate in self.and_gates:
             gate.reset()
+
+    def _reset(self):
+        for gate in self.or_gates:
+            gate._reset() if hasattr(gate, '_reset') else gate.reset()
+        for gate in self.and_gates:
+            gate._reset() if hasattr(gate, '_reset') else gate.reset()
+        for gate in self.not_gates:
+            gate._reset() if hasattr(gate, '_reset') else gate.reset()
 
 
 class OneHotToExponent(nn.Module):
@@ -803,6 +888,15 @@ class OneHotToExponent(nn.Module):
             if tree is not None:
                 tree.reset()
 
+    def _reset(self):
+        for gates in self.and_gates:
+            if gates is not None:
+                for g in gates:
+                    g._reset() if hasattr(g, '_reset') else g.reset()
+        for tree in self.or_trees:
+            if tree is not None:
+                tree._reset() if hasattr(tree, '_reset') else tree.reset()
+
 
 class NormalMantissaExtractor(nn.Module):
     """从脉冲序列中提取Normal数的尾数
@@ -886,7 +980,7 @@ class NormalMantissaExtractor(nn.Module):
                 m_bits_out.append(bit_val)
         
         return torch.cat(m_bits_out, dim=-1)
-    
+
     def reset(self):
         for gates in self.and_gates:
             if gates is not None:
@@ -895,6 +989,15 @@ class NormalMantissaExtractor(nn.Module):
         for tree in self.or_trees:
             if tree is not None:
                 tree.reset()
+
+    def _reset(self):
+        for gates in self.and_gates:
+            if gates is not None:
+                for g in gates:
+                    g._reset() if hasattr(g, '_reset') else g.reset()
+        for tree in self.or_trees:
+            if tree is not None:
+                tree._reset() if hasattr(tree, '_reset') else tree.reset()
 
 
 class PriorityEncoder8(nn.Module):
@@ -940,6 +1043,14 @@ class PriorityEncoder8(nn.Module):
         for g in self.not_gates: g.reset()
         for g in self.and_gates: g.reset()
 
+    def _reset(self):
+        for g in self.or_chain:
+            g._reset() if hasattr(g, '_reset') else g.reset()
+        for g in self.not_gates:
+            g._reset() if hasattr(g, '_reset') else g.reset()
+        for g in self.and_gates:
+            g._reset() if hasattr(g, '_reset') else g.reset()
+
 
 class ShiftAmountEncoder8to3(nn.Module):
     """Encode One-Hot 8-bit to 3-bit Binary - Pure SNN
@@ -971,6 +1082,10 @@ class ShiftAmountEncoder8to3(nn.Module):
         self.or_tree_s0.reset()
         self.or_tree_s1.reset()
         self.or_tree_s2.reset()
+
+    def _reset(self):
+        for tree in [self.or_tree_s0, self.or_tree_s1, self.or_tree_s2]:
+            tree._reset() if hasattr(tree, '_reset') else tree.reset()
 
 
 class BarrelShifter8(nn.Module):
@@ -1023,6 +1138,11 @@ class BarrelShifter8(nn.Module):
         for m in self.mux_s4: m.reset()
         for m in self.mux_s2: m.reset()
         for m in self.mux_s1: m.reset()
+
+    def _reset(self):
+        for muxes in [self.mux_s4, self.mux_s2, self.mux_s1]:
+            for m in muxes:
+                m._reset() if hasattr(m, '_reset') else m.reset()
 
 
 class ExponentAdjuster(nn.Module):
@@ -1077,6 +1197,12 @@ class ExponentAdjuster(nn.Module):
         self.or_tree_e3.reset()
         self.or_tree_e4.reset()
         self.or_tree_valid.reset()
+
+    def _reset(self):
+        for tree in [self.or_tree_e0, self.or_tree_e1, self.or_tree_e2,
+                     self.or_tree_e3, self.or_tree_e4, self.or_tree_valid]:
+            tree._reset() if hasattr(tree, '_reset') else tree.reset()
+        self.nor_all_valid._reset() if hasattr(self.nor_all_valid, '_reset') else self.nor_all_valid.reset()
 
 
 class NewNormalizationUnit(nn.Module):
@@ -1133,6 +1259,11 @@ class NewNormalizationUnit(nn.Module):
         self.barrel_shifter.reset()
         self.exponent_adjuster.reset()
 
+    def _reset(self):
+        for comp in [self.priority_encoder, self.shift_encoder,
+                     self.barrel_shifter, self.exponent_adjuster]:
+            comp._reset() if hasattr(comp, '_reset') else comp.reset()
+
 
 class TemporalExponentGenerator(nn.Module):
     """时序指数生成器 (纯SNN)
@@ -1166,7 +1297,7 @@ class TemporalExponentGenerator(nn.Module):
     def forward(self, has_fired, time_step_pulse):
         batch_size = has_fired.shape[0]
         device = has_fired.device
-        
+
         if self.state is None:
             init_val = torch.tensor([self.start_value], device=device, dtype=torch.float32)
             state_bits = []
@@ -1174,10 +1305,16 @@ class TemporalExponentGenerator(nn.Module):
                 bit = (init_val.int() >> i) & 1
                 state_bits.append(bit.float().expand(batch_size, 1))
             self.state = torch.cat(state_bits, dim=-1)
-            
+
         ones = torch.ones(batch_size, 1, device=device)
         minus_one = torch.cat([ones] * self.bits, dim=-1)
-        
+
+        # Reset internal gates before each timestep use (called in loop by encoder)
+        self.adder.reset()
+        self.not_gate.reset()
+        for m in self.mux_update:
+            m.reset()
+
         state_minus_1, _ = self.adder(self.state, minus_one)
         do_update = self.not_gate(has_fired)
         
@@ -1193,6 +1330,13 @@ class TemporalExponentGenerator(nn.Module):
         self.state = None
         self.adder.reset()
         for m in self.mux_update: m.reset()
+
+    def _reset(self):
+        self.state = None
+        self.adder._reset() if hasattr(self.adder, '_reset') else self.adder.reset()
+        for m in self.mux_update:
+            m._reset() if hasattr(m, '_reset') else m.reset()
+        self.not_gate._reset() if hasattr(self.not_gate, '_reset') else self.not_gate.reset()
 
 
 class DelayNode(nn.Module):
@@ -1212,6 +1356,9 @@ class DelayNode(nn.Module):
         return out
     
     def reset(self):
+        self.state = None
+
+    def _reset(self):
         self.state = None
 
 
@@ -1296,6 +1443,14 @@ class ArrayMultiplier4x4_Strict(nn.Module):
         self.row3_fa2.reset()
         self.row3_fa3.reset()
 
+    def _reset(self):
+        for g in self.pp_gates:
+            g._reset() if hasattr(g, '_reset') else g.reset()
+        for comp in [self.row1_ha, self.row1_fa1, self.row1_fa2, self.row1_fa3,
+                     self.row2_ha, self.row2_fa1, self.row2_fa2, self.row2_fa3,
+                     self.row3_ha, self.row3_fa1, self.row3_fa2, self.row3_fa3]:
+            comp._reset() if hasattr(comp, '_reset') else comp.reset()
+
 
 class Denormalizer(nn.Module):
     """Right Barrel Shifter for Denormalization
@@ -1347,10 +1502,15 @@ class Denormalizer(nn.Module):
             else:
                 val = self.mux_s1[i](s0, zeros, stage2[i])
             stage3.append(val)
-            
+
         return torch.cat(stage3, dim=-1)
 
     def reset(self):
         for m in self.mux_s4: m.reset()
         for m in self.mux_s2: m.reset()
         for m in self.mux_s1: m.reset()
+
+    def _reset(self):
+        for muxes in [self.mux_s4, self.mux_s2, self.mux_s1]:
+            for m in muxes:
+                m._reset() if hasattr(m, '_reset') else m.reset()

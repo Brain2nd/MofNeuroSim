@@ -45,18 +45,25 @@ from .neurons import SimpleIFNode, SimpleLIFNode
 # 神经元模板 (已移至 neurons.py)
 # ==============================================================================
 
-def _create_neuron(template, threshold, v_reset=None):
+def _create_neuron(template, threshold, v_reset=None, param_shape='auto'):
     """从模板创建指定阈值的神经元
 
-    默认使用软复位 (v_reset=None)，保留残差用于跨时间步实验
+    Args:
+        template: 神经元模板，None 则创建默认 IF 神经元
+        threshold: 目标阈值
+        v_reset: 复位电压 (None=软复位, 数值=硬复位)
+        param_shape: 参数形状 ('auto'=延迟初始化(默认), None=标量广播, tuple=指定形状)
     """
     if template is None:
-        return SimpleIFNode(v_threshold=threshold, v_reset=v_reset)
+        return SimpleIFNode(v_threshold=threshold, v_reset=v_reset,
+                           threshold_shape=param_shape)
     else:
         node = deepcopy(template)
         node.v_threshold = threshold
         if hasattr(node, 'v_reset'):
             node.v_reset = v_reset
+        if hasattr(node, 'param_shape') and param_shape is not None:
+            node.param_shape = param_shape
         return node
 
 

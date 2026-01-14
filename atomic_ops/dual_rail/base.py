@@ -36,7 +36,7 @@ class DualRailBlock(nn.Module):
             if hasattr(module, 'reset') and module is not self:
                 module.reset()
 
-def create_neuron(template, threshold, v_reset=None):
+def create_neuron(template, threshold, v_reset=None, param_shape='auto'):
     """Helper to create a neuron from a template.
 
     Args:
@@ -44,15 +44,19 @@ def create_neuron(template, threshold, v_reset=None):
         threshold: 目标阈值
         v_reset: 复位电压 (None=软复位, 数值=硬复位)
                  默认为 None (软复位)，保留残差用于跨时间步实验
+        param_shape: 参数形状 ('auto'=延迟初始化(默认), None=标量广播, tuple=指定形状)
 
     Returns:
         配置好的神经元实例
     """
     if template is None:
-        return SimpleIFNode(v_threshold=threshold, v_reset=v_reset)
+        return SimpleIFNode(v_threshold=threshold, v_reset=v_reset,
+                           threshold_shape=param_shape)
     else:
         node = deepcopy(template)
         node.v_threshold = threshold
         if hasattr(node, 'v_reset'):
             node.v_reset = v_reset
+        if hasattr(node, 'param_shape') and param_shape is not None:
+            node.param_shape = param_shape
         return node

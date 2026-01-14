@@ -19,6 +19,7 @@ adder_lif = SpikeFP32Adder(neuron_template=lif_template)
 # 转换工具函数
 from .converters import (
     float_to_fp8_bits, fp8_bits_to_float,
+    float16_to_pulse, pulse_to_float16,
     float32_to_pulse, pulse_to_float32,
     float64_to_pulse, pulse_to_float64,
     float32_to_bits, bits_to_float32,
@@ -65,11 +66,14 @@ SpikeFP8Linear = SpikeFP8Linear_Fast  # 默认使用 Fast 版本
 # FP16 模块
 from .fp16_adder import SpikeFP16Adder
 from .fp16_components import FP8ToFP16Converter, FP16ToFP8Converter
+from .fp16_mul_to_fp32 import FP16ToFP32Converter, SpikeFP16MulToFP32
+from .fp16_linear import SpikeFP16Linear_MultiPrecision
 
 # FP32 模块
 from .fp32_mul import SpikeFP32Multiplier
 from .fp32_div import SpikeFP32Divider
 from .fp32_adder import SpikeFP32Adder
+from .fp32_linear import SpikeFP32Linear
 from .fp32_exp import SpikeFP32Exp
 from .fp32_sqrt import SpikeFP32Sqrt
 from .fp32_recip import SpikeFP32Reciprocal

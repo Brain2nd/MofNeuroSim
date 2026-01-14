@@ -3,11 +3,21 @@
 100%纯SNN：所有计算通过IF神经元门电路实现，无实数运算
 
 支持统一的神经元模板机制，可在 IF/LIF 之间切换用于物理仿真。
+
+注意：使用向量化组件以保持与 FP16/FP32 组件的一致性。
 """
 import torch
 import torch.nn as nn
-from .logic_gates import (ANDGate, ORGate, XORGate, NOTGate, MUXGate, 
-                          HalfAdder, FullAdder, RippleCarryAdder)
+from .vec_logic_gates import (
+    VecAND as ANDGate,
+    VecOR as ORGate,
+    VecXOR as XORGate,
+    VecNOT as NOTGate,
+    VecMUX as MUXGate,
+    VecHalfAdder as HalfAdder,
+    VecFullAdder as FullAdder,
+    VecAdder as RippleCarryAdder
+)
 
 
 class Comparator4Bit(nn.Module):

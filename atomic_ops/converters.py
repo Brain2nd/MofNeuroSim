@@ -115,6 +115,57 @@ def pulse_to_float32(pulse):
 
 
 # ==============================================================================
+# FP16 转换函数
+# ==============================================================================
+
+def float16_to_pulse(x, device='cpu'):
+    """将 float16 张量转换为 16 位脉冲表示
+
+    Args:
+        x: float16 张量，任意形状（会自动转换为 float16）
+        device: 目标设备
+
+    Returns:
+        脉冲张量 [..., 16]，MSB-first [S, E4..E0, M9..M0]
+    """
+    if not isinstance(x, torch.Tensor):
+        x = torch.tensor(x, dtype=torch.float16)
+    x = x.to(torch.float16)
+    original_shape = x.shape
+
+    # 使用 view 进行位重解释: float16 -> int16
+    bits_int = x.view(torch.int16)
+
+    # 提取每一位 (MSB-first)
+    pulses = []
+    for i in range(15, -1, -1):
+        pulses.append(((bits_int >> i) & 1).float())
+
+    return torch.stack(pulses, dim=-1).to(device)
+
+
+def pulse_to_float16(pulse):
+    """将 16 位脉冲转换回 float16 张量
+
+    Args:
+        pulse: 脉冲张量 [..., 16]，MSB-first
+
+    Returns:
+        float16 张量 [...] (返回为 float32 以便计算)
+    """
+    device = pulse.device
+    shape = pulse.shape[:-1]
+
+    # 将脉冲转为整数位
+    bits_int = torch.zeros(shape, dtype=torch.int16, device=device)
+    for i in range(16):
+        bits_int = bits_int + ((pulse[..., i] > 0.5).short() << (15 - i))
+
+    # 位重解释: int16 -> float16 -> float32
+    return bits_int.view(torch.float16).float()
+
+
+# ==============================================================================
 # FP64 转换函数
 # ==============================================================================
 

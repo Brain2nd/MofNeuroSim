@@ -73,63 +73,64 @@ class SpikeFP8Linear_Fast(nn.Module):
             [..., out_features, 8] 输出脉冲
         """
         assert self.weight_pulse is not None, "请先调用 set_weight_from_float 设置权重"
-        
+        self.reset_all()  # 高层组件统一reset
+
         # x: [..., in_features, 8]
         # weight_pulse: [out_features, in_features, 8]
         x_expanded = x.unsqueeze(-3)  # [..., 1, in_features, 8]
         products = self.mul(x_expanded, self.weight_pulse)  # [..., out_features, in_features, 8]
-        
+
         if self.in_features == 1:
             return products.squeeze(-2)
-        
+
         if self.mode == 'tree':
             return self._tree_accumulate(products)
         else:
             return self._sequential_accumulate(products)
-    
+
     def _sequential_accumulate(self, products):
         """顺序累加：与PyTorch matmul完全一致"""
         # products: [..., out_features, in_features, 8]
         acc = products[..., 0, :]  # [..., out_features, 8]
-        
+
         for i in range(1, self.in_features):
-            self.adders[i-1].reset()
+            # 使用独立实例，无需循环内reset
             acc = self.adders[i-1](acc, products[..., i, :])
-        
+
         return acc
-    
+
     def _tree_accumulate(self, products):
         """树形累加：低延迟"""
         current = products
         current_size = self.in_features
-        
+
         for layer_idx, layer_adders in enumerate(self.adders):
             next_values = []
-            
+
             for i in range(0, current_size, 2):
                 if i + 1 < current_size:
                     a = current[..., i, :]
                     b = current[..., i + 1, :]
-                    layer_adders[i // 2].reset()
+                    # 使用独立实例，无需循环内reset
                     s = layer_adders[i // 2](a, b)
                     next_values.append(s)
                 else:
                     next_values.append(current[..., i, :])
-            
+
             current = torch.stack(next_values, dim=-2)
             current_size = len(next_values)
-        
+
         return current.squeeze(-2)
-    
+
+    def reset_all(self):
+        """递归reset所有子模块"""
+        for module in self.modules():
+            if module is not self and hasattr(module, 'reset'):
+                module.reset()
+
     def reset(self):
-        self.mul.reset()
-        if self.mode == 'tree':
-            for layer_adders in self.adders:
-                for adder in layer_adders:
-                    adder.reset()
-        else:
-            for adder in self.adders:
-                adder.reset()
+        """向后兼容"""
+        self.reset_all()
     
     def get_latency(self):
         """返回延迟（时间步数）"""

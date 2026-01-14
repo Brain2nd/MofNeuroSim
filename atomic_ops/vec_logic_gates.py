@@ -55,13 +55,19 @@ class VecAND(nn.Module):
     def __init__(self, neuron_template=None):
         super().__init__()
         self.node = _create_neuron(neuron_template, threshold=1.5)
-    
+
     def forward(self, a, b):
-        self.node.reset()
+        # NOTE: reset由父组件统一调用，此处不再自动reset
         return self.node(a + b)
-    
+
     def reset(self):
         self.node.reset()
+
+    def _reset(self):
+        if hasattr(self.node, '_reset'):
+            self.node._reset()
+        else:
+            self.node.reset()
 
 
 class VecOR(nn.Module):
@@ -75,13 +81,19 @@ class VecOR(nn.Module):
     def __init__(self, neuron_template=None):
         super().__init__()
         self.node = _create_neuron(neuron_template, threshold=0.5)
-    
+
     def forward(self, a, b):
-        self.node.reset()
+        # NOTE: reset由父组件统一调用，此处不再自动reset
         return self.node(a + b)
-    
+
     def reset(self):
         self.node.reset()
+
+    def _reset(self):
+        if hasattr(self.node, '_reset'):
+            self.node._reset()
+        else:
+            self.node.reset()
 
 
 class VecNOT(nn.Module):
@@ -103,49 +115,60 @@ class VecNOT(nn.Module):
     def __init__(self, neuron_template=None):
         super().__init__()
         self.node = _create_neuron(neuron_template, threshold=1.0)
-    
+
     def forward(self, x):
-        self.node.reset()
+        # NOTE: reset由父组件统一调用，此处不再自动reset
         # 物理模拟: Bias(1.5) + Inhibitory(-x)
         return self.node(1.5 - x)
-    
+
     def reset(self):
         self.node.reset()
+
+    def _reset(self):
+        if hasattr(self.node, '_reset'):
+            self.node._reset()
+        else:
+            self.node.reset()
 
 
 class VecXOR(nn.Module):
     """向量化XOR门 - 纯 SNN 实现
-    
+
     使用内部 VecNOT 生成反相信号，消除 `1-x` 数学计算。
     """
     def __init__(self, neuron_template=None):
         super().__init__()
-        self.not_gate = VecNOT(neuron_template)
+        # 使用两个独立NOT门实例避免状态累积
+        self.not_a_gate = VecNOT(neuron_template)
+        self.not_b_gate = VecNOT(neuron_template)
         # XOR = (A AND NOT_B) OR (NOT_A AND B)
         self.and1 = _create_neuron(neuron_template, threshold=1.5)  # A AND NOT_B
         self.and2 = _create_neuron(neuron_template, threshold=1.5)  # NOT_A AND B
         self.or_out = _create_neuron(neuron_template, threshold=0.5)  # 输出 OR
-    
+
     def forward(self, a, b):
-        self.not_gate.reset()
-        self.and1.reset()
-        self.and2.reset()
-        self.or_out.reset()
-        
-        # 内部生成反相信号
-        not_a = self.not_gate(a)
-        not_b = self.not_gate(b)
-        
+        # NOTE: reset由父组件统一调用，此处不再自动reset
+        # 内部生成反相信号 - 每个输入使用独立的NOT门
+        not_a = self.not_a_gate(a)
+        not_b = self.not_b_gate(b)
+
         # XOR逻辑
         term1 = self.and1(a + not_b)  # A AND NOT_B
         term2 = self.and2(not_a + b)  # NOT_A AND B
         return self.or_out(term1 + term2)  # OR
-    
+
     def reset(self):
-        self.not_gate.reset()
+        self.not_a_gate.reset()
+        self.not_b_gate.reset()
         self.and1.reset()
         self.and2.reset()
         self.or_out.reset()
+
+    def _reset(self):
+        for gate in [self.not_a_gate, self.not_b_gate]:
+            gate._reset() if hasattr(gate, '_reset') else gate.reset()
+        for node in [self.and1, self.and2, self.or_out]:
+            node._reset() if hasattr(node, '_reset') else node.reset()
 
 
 class VecMUX(nn.Module):
@@ -164,16 +187,21 @@ class VecMUX(nn.Module):
         self.or_gate = VecOR(neuron_template)
     
     def forward(self, sel, a, b):
+        # NOTE: reset由父组件统一调用，此处不再自动reset
         ns = self.not_s(sel)
         sa = self.and1(sel, a)
         nsb = self.and2(ns, b)
         return self.or_gate(sa, nsb)
-    
+
     def reset(self):
         self.not_s.reset()
         self.and1.reset()
         self.and2.reset()
         self.or_gate.reset()
+
+    def _reset(self):
+        for comp in [self.not_s, self.and1, self.and2, self.or_gate]:
+            comp._reset() if hasattr(comp, '_reset') else comp.reset()
 
 
 # ==============================================================================
@@ -220,6 +248,10 @@ class VecORTree(nn.Module):
         for g in self.or_gates:
             g.reset()
 
+    def _reset(self):
+        for g in self.or_gates:
+            g._reset() if hasattr(g, '_reset') else g.reset()
+
 
 class VecANDTree(nn.Module):
     """并行AND树 - 检测所有位是否为1
@@ -261,6 +293,10 @@ class VecANDTree(nn.Module):
         for g in self.and_gates:
             g.reset()
 
+    def _reset(self):
+        for g in self.and_gates:
+            g._reset() if hasattr(g, '_reset') else g.reset()
+
 
 # ==============================================================================
 # 向量化算术单元
@@ -281,13 +317,18 @@ class VecHalfAdder(nn.Module):
         self.and_gate = VecAND(neuron_template)
     
     def forward(self, a, b):
+        # NOTE: reset由父组件统一调用，此处不再自动reset
         s = self.xor_gate(a, b)
         c = self.and_gate(a, b)
         return s, c
-    
+
     def reset(self):
         self.xor_gate.reset()
         self.and_gate.reset()
+
+    def _reset(self):
+        for comp in [self.xor_gate, self.and_gate]:
+            comp._reset() if hasattr(comp, '_reset') else comp.reset()
 
 
 class VecFullAdder(nn.Module):
@@ -308,19 +349,24 @@ class VecFullAdder(nn.Module):
         self.or1 = VecOR(neuron_template)
     
     def forward(self, a, b, cin):
+        # NOTE: reset由父组件统一调用，此处不再自动reset
         p = self.xor1(a, b)         # P = A XOR B
         s = self.xor2(p, cin)       # S = P XOR Cin
         g = self.and1(a, b)         # G = A AND B
         pc = self.and2(p, cin)      # P AND Cin
         cout = self.or1(g, pc)      # Cout = G OR (P AND Cin)
         return s, cout
-    
+
     def reset(self):
         self.xor1.reset()
         self.xor2.reset()
         self.and1.reset()
         self.and2.reset()
         self.or1.reset()
+
+    def _reset(self):
+        for comp in [self.xor1, self.xor2, self.and1, self.and2, self.or1]:
+            comp._reset() if hasattr(comp, '_reset') else comp.reset()
 
 
 # ==============================================================================
@@ -342,12 +388,13 @@ class VecAdder(nn.Module):
     def __init__(self, bits, neuron_template=None):
         super().__init__()
         self.bits = bits
-        
+
         self.xor1 = VecXOR(neuron_template)  # 计算 P
         self.xor2 = VecXOR(neuron_template)  # 计算 S
         self.and1 = VecAND(neuron_template)  # 计算 G
-        self.and2 = VecAND(neuron_template)  # P AND carry
-        self.or1 = VecOR(neuron_template)    # G OR (P AND carry)
+        # 进位链：每位使用独立实例（避免串行复用）
+        self.and2 = nn.ModuleList([VecAND(neuron_template) for _ in range(bits)])  # P AND carry
+        self.or1 = nn.ModuleList([VecOR(neuron_template) for _ in range(bits)])    # G OR (P AND carry)
         
     def forward(self, A, B, Cin=None):
         """
@@ -367,13 +414,13 @@ class VecAdder(nn.Module):
         P = self.xor1(A, B)  # [..., bits]
         G = self.and1(A, B)  # [..., bits]
         
-        # 2. 进位链 (串行依赖，不可避免)
+        # 2. 进位链 (串行依赖，不可避免，使用独立实例)
         carries = [carry]
         for i in range(self.bits):
             p_i = P[..., i:i+1]
             g_i = G[..., i:i+1]
-            pc = self.and2(p_i, carry)
-            carry = self.or1(g_i, pc)
+            pc = self.and2[i](p_i, carry)
+            carry = self.or1[i](g_i, pc)
             carries.append(carry)
         
         # 3. 并行计算和
@@ -381,13 +428,21 @@ class VecAdder(nn.Module):
         S = self.xor2(P, all_carries)
         
         return S, carries[-1]
-    
+
     def reset(self):
         self.xor1.reset()
         self.xor2.reset()
         self.and1.reset()
-        self.and2.reset()
-        self.or1.reset()
+        for g in self.and2: g.reset()
+        for g in self.or1: g.reset()
+
+    def _reset(self):
+        for comp in [self.xor1, self.xor2, self.and1]:
+            comp._reset() if hasattr(comp, '_reset') else comp.reset()
+        for g in self.and2:
+            g._reset() if hasattr(g, '_reset') else g.reset()
+        for g in self.or1:
+            g._reset() if hasattr(g, '_reset') else g.reset()
 
 
 class VecSubtractor(nn.Module):
@@ -402,13 +457,15 @@ class VecSubtractor(nn.Module):
     def __init__(self, bits, neuron_template=None):
         super().__init__()
         self.bits = bits
-        
+
         self.not_b = VecNOT(neuron_template)
+        self.not_borrow = VecNOT(neuron_template)  # 用于计算最终借位
         self.xor1 = VecXOR(neuron_template)   # A XOR NOT(B)
         self.xor2 = VecXOR(neuron_template)   # P XOR carry
         self.and1 = VecAND(neuron_template)   # A AND NOT(B) (generate)
-        self.and2 = VecAND(neuron_template)   # P AND carry
-        self.or1 = VecOR(neuron_template)     # G OR (P AND carry)
+        # 进位链：每位使用独立实例（避免串行复用）
+        self.and2 = nn.ModuleList([VecAND(neuron_template) for _ in range(bits)])  # P AND carry
+        self.or1 = nn.ModuleList([VecOR(neuron_template) for _ in range(bits)])    # G OR (P AND carry)
         
     def forward(self, A, B):
         """
@@ -434,26 +491,35 @@ class VecSubtractor(nn.Module):
         for i in range(self.bits):
             p_i = P[..., i:i+1]
             g_i = G[..., i:i+1]
-            pc = self.and2(p_i, carry)
-            carry = self.or1(g_i, pc)
+            pc = self.and2[i](p_i, carry)
+            carry = self.or1[i](g_i, pc)
             carries.append(carry)
-        
+
         # 4. 并行计算差
         all_carries = torch.cat(carries[:-1], dim=-1)
         D = self.xor2(P, all_carries)
-        
-        # 借位 = NOT(最终进位)
-        borrow = self.not_b(carries[-1])
+
+        # 借位 = NOT(最终进位)，使用独立的NOT门
+        borrow = self.not_borrow(carries[-1])
         
         return D, borrow
-    
+
     def reset(self):
         self.not_b.reset()
+        self.not_borrow.reset()
         self.xor1.reset()
         self.xor2.reset()
         self.and1.reset()
-        self.and2.reset()
-        self.or1.reset()
+        for g in self.and2: g.reset()
+        for g in self.or1: g.reset()
+
+    def _reset(self):
+        for comp in [self.not_b, self.not_borrow, self.xor1, self.xor2, self.and1]:
+            comp._reset() if hasattr(comp, '_reset') else comp.reset()
+        for g in self.and2:
+            g._reset() if hasattr(g, '_reset') else g.reset()
+        for g in self.or1:
+            g._reset() if hasattr(g, '_reset') else g.reset()
 
 
 # ==============================================================================
@@ -517,7 +583,7 @@ class VecComparator(nn.Module):
             prefix_eq = self.and_prefix(prefix_eq, eq_bits[..., i:i+1])
         
         return gt_result, all_eq
-    
+
     def reset(self):
         self.xor_eq.reset()
         self.not_b.reset()
@@ -526,3 +592,8 @@ class VecComparator(nn.Module):
         self.or_tree.reset()
         self.and_prefix.reset()
         self.or_result.reset()
+
+    def _reset(self):
+        for comp in [self.xor_eq, self.not_b, self.and_gt, self.and_tree,
+                     self.or_tree, self.and_prefix, self.or_result]:
+            comp._reset() if hasattr(comp, '_reset') else comp.reset()

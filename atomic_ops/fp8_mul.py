@@ -1,7 +1,18 @@
 import torch
 import torch.nn as nn
-from .logic_gates import (XORGate, ORGate, ANDGate, NOTGate, MUXGate, OR3Gate,
-                          HalfAdder, FullAdder, RippleCarryAdder, ArrayMultiplier4x4_Strict,
+# 使用向量化基础门以保持与 FP16/FP32 组件的一致性
+from .vec_logic_gates import (
+    VecAND as ANDGate,
+    VecOR as ORGate,
+    VecXOR as XORGate,
+    VecNOT as NOTGate,
+    VecMUX as MUXGate,
+    VecHalfAdder as HalfAdder,
+    VecFullAdder as FullAdder,
+    VecAdder as RippleCarryAdder
+)
+# 保留专用组件（这些内部也需要向量化，但接口兼容）
+from .logic_gates import (OR3Gate, ArrayMultiplier4x4_Strict,
                           NewNormalizationUnit, Denormalizer)
 
 class SpikeFP8Multiplier(nn.Module):
@@ -330,6 +341,10 @@ class SpikeFP8Multiplier(nn.Module):
     def forward(self, A, B):
         # A, B: [..., 8] = S(1) E(4) M(3)
         # 支持广播：A和B可以有不同的前导维度
+
+        # 高层组件统一reset所有内部门电路
+        self.reset_all()
+
         A, B = torch.broadcast_tensors(A, B)
         
         # ===== 1. 符号 =====
@@ -1058,3 +1073,9 @@ class SpikeFP8Multiplier(nn.Module):
         self.sticky_extra_masked.reset()
         self.sub_sticky_base.reset()
         self.sub_sticky_final.reset()
+
+    def reset_all(self):
+        """递归reset所有子模块"""
+        for module in self.modules():
+            if module is not self and hasattr(module, 'reset'):
+                module.reset()

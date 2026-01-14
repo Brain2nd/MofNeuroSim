@@ -40,10 +40,10 @@ class ComparatorNBit(nn.Module):
         # 前缀逻辑有依赖，使用树归约
         self.eq_tree = VecANDTree(neuron_template=nt)  # 最终 a_eq_b
         
-        # 用于 a_gt_b 的逐位计算（有依赖，需要循环）
+        # 用于 a_gt_b 的逐位计算（有依赖，需要独立实例）
         self.eq_prefix_and = nn.ModuleList([VecAND(neuron_template=nt) for _ in range(max(1, bits - 1))])
-        self.result_and = VecAND(neuron_template=nt)
-        self.result_or = VecOR(neuron_template=nt)
+        self.result_and = nn.ModuleList([VecAND(neuron_template=nt) for _ in range(max(1, bits - 1))])
+        self.result_or = nn.ModuleList([VecOR(neuron_template=nt) for _ in range(max(1, bits - 1))])
         
     def forward(self, A, B):
         """A, B: [..., bits] (MSB first)"""
@@ -69,9 +69,9 @@ class ComparatorNBit(nn.Module):
         
         for i in range(1, n):
             # term = eq_prefix AND gt[i]
-            term = self.result_and(eq_prefix, gt_all[..., i:i+1])
-            a_gt_b = self.result_or(a_gt_b, term)
-            
+            term = self.result_and[i-1](eq_prefix, gt_all[..., i:i+1])
+            a_gt_b = self.result_or[i-1](a_gt_b, term)
+
             # 更新 eq_prefix = eq_prefix AND eq[i] (除了最后一位)
             if i < n - 1:
                 eq_prefix = self.eq_prefix_and[i-1](eq_prefix, eq_all[..., i:i+1])
@@ -85,8 +85,8 @@ class ComparatorNBit(nn.Module):
         self.vec_gt_and.reset()
         self.eq_tree.reset()
         for g in self.eq_prefix_and: g.reset()
-        self.result_and.reset()
-        self.result_or.reset()
+        for g in self.result_and: g.reset()
+        for g in self.result_or: g.reset()
 
 
 class Comparator8Bit(ComparatorNBit):
@@ -103,10 +103,9 @@ class Comparator24Bit(ComparatorNBit):
 
 class SubtractorNBit(nn.Module):
     """N位减法器 - 向量化SNN实现 (LSB first)
-    
-    使用向量化门电路复用，减少实例数量。
-    借位链有依赖，需要循环但复用门电路。
-    
+
+    每位使用独立的门电路实例，符合"上层reset，下层仅提供接口"原则。
+
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
     """
@@ -114,58 +113,58 @@ class SubtractorNBit(nn.Module):
         super().__init__()
         self.bits = bits
         nt = neuron_template
-        
-        # 向量化门电路：复用实例处理串行计算
-        self.vec_xor1 = VecXOR(neuron_template=nt)   # a XOR b
-        self.vec_xor2 = VecXOR(neuron_template=nt)   # t1 XOR borrow
-        self.vec_not_a = VecNOT(neuron_template=nt)  # NOT(a)
-        self.vec_and1 = VecAND(neuron_template=nt)   # NOT(a) AND b
-        self.vec_and2 = VecAND(neuron_template=nt)   # NOT(a) AND borrow
-        self.vec_and3 = VecAND(neuron_template=nt)   # b AND borrow
-        self.vec_or1 = VecOR(neuron_template=nt)     # term1 OR term2
-        self.vec_or2 = VecOR(neuron_template=nt)     # t12 OR term3
-        
+
+        # 每位独立的门电路实例
+        self.vec_xor1 = nn.ModuleList([VecXOR(neuron_template=nt) for _ in range(bits)])
+        self.vec_xor2 = nn.ModuleList([VecXOR(neuron_template=nt) for _ in range(bits)])
+        self.vec_not_a = nn.ModuleList([VecNOT(neuron_template=nt) for _ in range(bits)])
+        self.vec_and1 = nn.ModuleList([VecAND(neuron_template=nt) for _ in range(bits)])
+        self.vec_and2 = nn.ModuleList([VecAND(neuron_template=nt) for _ in range(bits)])
+        self.vec_and3 = nn.ModuleList([VecAND(neuron_template=nt) for _ in range(bits)])
+        self.vec_or1 = nn.ModuleList([VecOR(neuron_template=nt) for _ in range(bits)])
+        self.vec_or2 = nn.ModuleList([VecOR(neuron_template=nt) for _ in range(bits)])
+
     def forward(self, A, B, Bin=None):
         """A - B, LSB first (index 0 = LSB)"""
         self.reset()
         n = self.bits
-        
+
         if Bin is None:
             borrow = torch.zeros_like(A[..., 0:1])
         else:
             borrow = Bin
-            
+
         diffs = []
         for i in range(n):
             a_i = A[..., i:i+1]
             b_i = B[..., i:i+1]
-            
-            # 复用向量化门电路
-            t1 = self.vec_xor1(a_i, b_i)
-            diff = self.vec_xor2(t1, borrow)
-            
-            not_a_i = self.vec_not_a(a_i)
-            term1 = self.vec_and1(not_a_i, b_i)
-            term2 = self.vec_and2(not_a_i, borrow)
-            term3 = self.vec_and3(b_i, borrow)
-            t12 = self.vec_or1(term1, term2)
-            new_borrow = self.vec_or2(t12, term3)
-            
+
+            # 使用独立实例（无需循环内reset）
+            t1 = self.vec_xor1[i](a_i, b_i)
+            diff = self.vec_xor2[i](t1, borrow)
+
+            not_a_i = self.vec_not_a[i](a_i)
+            term1 = self.vec_and1[i](not_a_i, b_i)
+            term2 = self.vec_and2[i](not_a_i, borrow)
+            term3 = self.vec_and3[i](b_i, borrow)
+            t12 = self.vec_or1[i](term1, term2)
+            new_borrow = self.vec_or2[i](t12, term3)
+
             diffs.append(diff)
             borrow = new_borrow
-        
+
         result = torch.cat(diffs, dim=-1)
         return result, borrow
-    
+
     def reset(self):
-        self.vec_xor1.reset()
-        self.vec_xor2.reset()
-        self.vec_not_a.reset()
-        self.vec_and1.reset()
-        self.vec_and2.reset()
-        self.vec_and3.reset()
-        self.vec_or1.reset()
-        self.vec_or2.reset()
+        for g in self.vec_xor1: g.reset()
+        for g in self.vec_xor2: g.reset()
+        for g in self.vec_not_a: g.reset()
+        for g in self.vec_and1: g.reset()
+        for g in self.vec_and2: g.reset()
+        for g in self.vec_and3: g.reset()
+        for g in self.vec_or1: g.reset()
+        for g in self.vec_or2: g.reset()
 
 
 class Subtractor8Bit(SubtractorNBit):
@@ -278,11 +277,11 @@ class BarrelShifterRight28WithSticky(nn.Module):
         
         # 每层使用一个 VecMUX 处理所有位
         self.vec_mux_layers = nn.ModuleList([VecMUX(neuron_template=nt) for _ in range(self.shift_bits)])
-        
-        # Sticky 计算：使用 VecORTree 替代串行 OR 链
-        self.sticky_or_tree = VecORTree(neuron_template=nt)
+
+        # Sticky 计算：每层独立实例
+        self.sticky_or_tree = nn.ModuleList([VecORTree(neuron_template=nt) for _ in range(self.shift_bits)])
         self.sticky_mux = nn.ModuleList([VecMUX(neuron_template=nt) for _ in range(self.shift_bits)])
-        self.sticky_accum_or = VecOR(neuron_template=nt)
+        self.sticky_accum_or = nn.ModuleList([VecOR(neuron_template=nt) for _ in range(self.shift_bits)])
         
     def forward(self, X, shift):
         """X: [..., 28], shift: [..., 5] (MSB first，bit0是MSB，bit27是LSB)
@@ -296,18 +295,18 @@ class BarrelShifterRight28WithSticky(nn.Module):
         for layer in range(self.shift_bits):
             shift_amt = 2 ** (self.shift_bits - 1 - layer)
             s_bit = shift[..., layer:layer+1]
-            
+
             # 计算被移出位的 OR (使用 VecORTree 并行归约)
             if shift_amt <= self.data_bits:
                 start_idx = self.data_bits - shift_amt
                 shifted_out_bits = current[..., start_idx:]  # [..., shift_amt]
-                layer_sticky = self.sticky_or_tree(shifted_out_bits)
+                layer_sticky = self.sticky_or_tree[layer](shifted_out_bits)
             else:
                 layer_sticky = zeros
-            
+
             # 如果这层移位了，累积 sticky
             layer_sticky_selected = self.sticky_mux[layer](s_bit, layer_sticky, zeros)
-            sticky_accum = self.sticky_accum_or(sticky_accum, layer_sticky_selected)
+            sticky_accum = self.sticky_accum_or[layer](sticky_accum, layer_sticky_selected)
             
             # 构建移位后的版本 (并行)
             if shift_amt < self.data_bits:
@@ -328,9 +327,9 @@ class BarrelShifterRight28WithSticky(nn.Module):
     
     def reset(self):
         for mux in self.vec_mux_layers: mux.reset()
-        self.sticky_or_tree.reset()
+        for g in self.sticky_or_tree: g.reset()
         for mux in self.sticky_mux: mux.reset()
-        self.sticky_accum_or.reset()
+        for g in self.sticky_accum_or: g.reset()
 
 
 class BarrelShifterLeft28(nn.Module):
@@ -388,65 +387,74 @@ class BarrelShifterLeft28(nn.Module):
 # ==============================================================================
 class LeadingZeroDetector28(nn.Module):
     """28位前导零检测器 - 向量化SNN实现
-    
-    使用向量化门电路复用（有依赖需循环，但门电路实例复用）
-    
+
+    每次迭代使用独立的门电路实例，符合"上层reset，下层仅提供接口"原则。
+
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
     """
     def __init__(self, neuron_template=None):
         super().__init__()
         nt = neuron_template
-        # 向量化门电路复用
-        self.vec_not_found = VecNOT(neuron_template=nt)
+        # 每次迭代独立的门电路实例
+        self.vec_not_found = nn.ModuleList([VecNOT(neuron_template=nt) for _ in range(28)])
         self.vec_not_all_zero = VecNOT(neuron_template=nt)
-        self.vec_and_first = VecAND(neuron_template=nt)   # bit AND NOT(found)
-        self.vec_or_found = VecOR(neuron_template=nt)     # found OR is_first
-        self.vec_or_lzc = VecOR(neuron_template=nt)       # lzc 累积
-        self.vec_or_final = VecOR(neuron_template=nt)     # 最终 OR
-        
+        self.vec_and_first = nn.ModuleList([VecAND(neuron_template=nt) for _ in range(28)])
+        self.vec_or_found = nn.ModuleList([VecOR(neuron_template=nt) for _ in range(28)])
+        # 每个lzc[b]最多被更新28次，为每个b创建28个实例
+        self.vec_or_lzc = nn.ModuleList([
+            nn.ModuleList([VecOR(neuron_template=nt) for _ in range(28)])
+            for _ in range(5)
+        ])
+        self.vec_or_final = nn.ModuleList([VecOR(neuron_template=nt) for _ in range(3)])
+
     def forward(self, X):
         """X: [..., 28], returns: [..., 5] (LZC, MSB first)"""
         self.reset()
         device = X.device
         batch_shape = X.shape[:-1]
         zeros = torch.zeros(batch_shape + (1,), device=device)
-        
+
         lzc = [zeros.clone() for _ in range(5)]
         found = zeros.clone()
-        
+        lzc_counts = [0] * 5  # 追踪每个lzc[b]的使用次数
+
         for i in range(28):
             bit = X[..., i:i+1]
-            not_found = self.vec_not_found(found)
-            is_first = self.vec_and_first(bit, not_found)
-            
+            not_found = self.vec_not_found[i](found)
+            is_first = self.vec_and_first[i](bit, not_found)
+
             pos = i
             # 将位置编码为5位
             for b in range(5):
                 pos_bit = (pos >> (4 - b)) & 1
                 if pos_bit:
-                    lzc[b] = self.vec_or_lzc(lzc[b], is_first)
-            
+                    lzc[b] = self.vec_or_lzc[b][lzc_counts[b]](lzc[b], is_first)
+                    lzc_counts[b] += 1
+
             # found = found OR is_first
-            found = self.vec_or_found(found, is_first)
-        
+            found = self.vec_or_found[i](found, is_first)
+
         # 全零情况: 返回 28 (二进制 11100)
         all_zero = self.vec_not_all_zero(found)
         # 28 = 0b11100 = [1, 1, 1, 0, 0]
         all_zero_bits = [1, 1, 1, 0, 0]
+        final_idx = 0
         for b in range(5):
             if all_zero_bits[b]:
-                lzc[b] = self.vec_or_final(lzc[b], all_zero)
-        
+                lzc[b] = self.vec_or_final[final_idx](lzc[b], all_zero)
+                final_idx += 1
+
         return torch.cat(lzc, dim=-1)
-    
+
     def reset(self):
-        self.vec_not_found.reset()
+        for g in self.vec_not_found: g.reset()
         self.vec_not_all_zero.reset()
-        self.vec_and_first.reset()
-        self.vec_or_found.reset()
-        self.vec_or_lzc.reset()
-        self.vec_or_final.reset()
+        for g in self.vec_and_first: g.reset()
+        for g in self.vec_or_found: g.reset()
+        for b_list in self.vec_or_lzc:
+            for g in b_list: g.reset()
+        for g in self.vec_or_final: g.reset()
 
 
 # ==============================================================================
@@ -691,7 +699,8 @@ class FP32ToFP8Converter(nn.Module):
         # 溢出/下溢/正常结果选择
         self.overflow_mux_e = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(4)])
         self.overflow_mux_m = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(3)])
-        self.underflow_mux_e = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(4)])
+        self.subnorm_select_mux_e = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(4)])  # for is_subnormal
+        self.underflow_mux_e = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(4)])  # for is_underflow
         self.underflow_mux_m = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(3)])
         
         # 舍入后指数选择
@@ -826,8 +835,7 @@ class FP32ToFP8Converter(nn.Module):
         # Subnormal 区间检测: 117 <= FP32_exp < 121
         # exp=117 的值可能舍入到最小 subnormal (M=1)
         const_117 = torch.cat([zeros, ones, ones, ones, zeros, ones, zeros, ones], dim=-1)
-        exp_ge_117, _ = self.subnorm_cmp_low(fp32_exp, const_117)  # exp >= 117
-        _, exp_eq_117 = self.subnorm_cmp_low(fp32_exp, const_117)
+        exp_ge_117, exp_eq_117 = self.subnorm_cmp_low(fp32_exp, const_117)  # exp >= 117 (单次调用避免复用)
         # exp >= 117 用纯 SNN OR 门实现: gt OR eq
         exp_ge_or_eq_117 = self.exp_ge_or_eq_117_or(exp_ge_117, exp_eq_117)
         is_subnormal = self.and_is_subnormal(is_below_normal, exp_ge_or_eq_117)  # 纯SNN AND
@@ -1066,7 +1074,7 @@ class FP32ToFP8Converter(nn.Module):
             e_ov = self.overflow_mux_e[i](is_overflow, nan_exp[..., i:i+1], final_exp_pre[..., i:i+1])
             # Subnormal 时 E=0，但如果 subnormal 进位则 E=1 (纯SNN MUX)
             e_subnormal_val = self.subnorm_exp_mux[i](subnorm_overflow, subnorm_overflow_exp[..., i:i+1], zero_exp[..., i:i+1])
-            e_sub = self.underflow_mux_e[i](is_subnormal, e_subnormal_val, e_ov)
+            e_sub = self.subnorm_select_mux_e[i](is_subnormal, e_subnormal_val, e_ov)  # 使用独立MUX
             e_final = self.underflow_mux_e[i](is_underflow, zero_exp[..., i:i+1], e_sub)
             final_exp.append(e_final)
         final_exp = torch.cat(final_exp, dim=-1)
@@ -1098,6 +1106,7 @@ class FP32ToFP8Converter(nn.Module):
         self.exp_inc.reset()
         for mux in self.overflow_mux_e: mux.reset()
         for mux in self.overflow_mux_m: mux.reset()
+        for mux in self.subnorm_select_mux_e: mux.reset()
         for mux in self.underflow_mux_e: mux.reset()
         for mux in self.underflow_mux_m: mux.reset()
         for mux in self.round_exp_mux: mux.reset()
@@ -1221,7 +1230,7 @@ class FP32ToFP16Converter(nn.Module):
         e_all_one = fp32_exp[..., 0:1]
         for i in range(1, 8):
             e_all_one = self.nan_exp_and[i-1](e_all_one, fp32_exp[..., i:i+1])
-        
+
         m_any_one = fp32_mant[..., 0:1]
         for i in range(1, 23):
             m_any_one = self.nan_mant_or[i-1](m_any_one, fp32_mant[..., i:i+1])
