@@ -3,9 +3,10 @@
 ===================================================
 
 测试 IF/LIF 神经元切换功能，确保：
-1. 默认 IF 神经元正常工作
+1. 默认 LIF 神经元正常工作（SimpleLIFNode with DEFAULT_BETA）
 2. LIF 神经元模板正常工作
 3. 参数向下传递正确
+4. 可训练参数（threshold/beta）默认启用
 """
 import sys
 import os
@@ -698,14 +699,13 @@ def test_neuron_template_actually_used():
     if not (or_threshold_correct and or_beta_correct):
         all_passed = False
     
-    # 测试 3: 验证默认情况下使用 SimpleIFNode
-    from atomic_ops.neurons import SimpleIFNode
+    # 测试 3: 验证默认情况下使用 SimpleLIFNode（新默认）
     and_gate_default = ANDGate().to(device)  # 不传 neuron_template
-    is_if = isinstance(and_gate_default.node, SimpleIFNode)
+    is_lif_default = isinstance(and_gate_default.node, SimpleLIFNode)
 
-    print(f"  默认使用 SimpleIFNode: {is_if} {'✓' if is_if else '✗'}")
+    print(f"  默认使用 SimpleLIFNode: {is_lif_default} {'✓' if is_lif_default else '✗'}")
 
-    if not is_if:
+    if not is_lif_default:
         all_passed = False
     
     # 测试 4: 验证 deepcopy 独立性（修改模板不影响已创建的门）

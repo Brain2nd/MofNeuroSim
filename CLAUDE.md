@@ -84,17 +84,33 @@ Float Input → [Encoder] → Pulse Sequence → [SNN Gates] → Pulse Sequence 
 | XOR  | -         | OR(A,B) - AND(A,B) (3 neurons) |
 | MUX  | -         | OR(AND(A,S), AND(B,NOT(S))) |
 
-**Neuron Template System**: All components support `neuron_template` parameter to switch between IF (ideal digital) and LIF (physical simulation):
-```python
-from atomic_ops import ANDGate, SimpleLIFNode, SpikeFP32Adder
+**Neuron Template System**: All components support `neuron_template` parameter. Default is `SimpleLIFNode` with:
+- `DEFAULT_BETA = 1.0 - 1e-7` (near-zero leak, maintains bit-exact results)
+- `trainable_threshold=True`, `trainable_beta=True` (trainable parameters enabled by default)
+- `param_shape='auto'` (lazy initialization - tensor dimensions determined on first forward pass)
 
-# Default IF neurons
+**Lazy Initialization Constraint**: 懒加载使用 `x.shape[1:]` 确定参数形状，**要求 batch 维度必须在第0维**：
+```
+x.shape = [batch, 32]      → param.shape = [32]      ✓
+x.shape = [batch, 8, 32]   → param.shape = [8, 32]   ✓
+x.shape = [32]             → param.shape = []        ⚠ 无batch维度，可能出错
+x.shape = [32, batch]      → param.shape = [batch]   ✗ batch在错误位置
+```
+
+```python
+from atomic_ops import ANDGate, SimpleLIFNode, SimpleIFNode, SpikeFP32Adder
+
+# Default: SimpleLIFNode with DEFAULT_BETA (trainable params enabled, lazy init)
 and_gate = ANDGate()
 
-# LIF neurons for physical simulation
+# Custom LIF with different beta (for physical simulation)
 lif_template = SimpleLIFNode(beta=0.9)
 and_gate_lif = ANDGate(neuron_template=lif_template)
 adder_lif = SpikeFP32Adder(neuron_template=lif_template)
+
+# Use SimpleIFNode if needed (backward compatibility)
+if_template = SimpleIFNode()
+and_gate_if = ANDGate(neuron_template=if_template)
 ```
 
 ### Reset Mechanisms
