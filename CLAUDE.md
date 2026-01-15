@@ -28,6 +28,18 @@ MofNeuroSim is a **100% pure Spiking Neural Network (SNN)** implementation of IE
 
 5. **No Unsolicited Git Push**: NEVER push to GitHub unless explicitly requested by the user. Commits can be created locally, but `git push` requires explicit user permission.
 
+6. **Extend Existing Classes, Don't Create Demos**: When adding new features, MUST modify existing framework classes. Do NOT create simplified demo implementations for convenience - this causes fragmentation from the main framework. Always integrate new functionality into the existing architecture.
+   ```python
+   # ❌ FORBIDDEN - Creating standalone demo
+   class SimpleFP32Adder_Demo(nn.Module):  # 脱节的简化实现
+       ...
+
+   # ✅ REQUIRED - Extend existing class
+   class SpikeFP32Adder(nn.Module):  # 在现有类上添加功能
+       def new_feature(self, ...):
+           ...
+   ```
+
 ## Build & Test Commands
 
 ```bash
