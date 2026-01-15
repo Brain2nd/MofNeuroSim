@@ -26,6 +26,8 @@ MofNeuroSim is a **100% pure Spiking Neural Network (SNN)** implementation of IE
 
 4. **Sequential Task Completion**: When executing a plan, NEVER skip ahead to later tasks. Each task must be 100% completed and verified compliant before starting the next one. No exceptions.
 
+5. **No Unsolicited Git Push**: NEVER push to GitHub unless explicitly requested by the user. Commits can be created locally, but `git push` requires explicit user permission.
+
 ## Build & Test Commands
 
 ```bash
