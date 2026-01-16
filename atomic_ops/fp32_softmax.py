@@ -39,8 +39,6 @@ class SpikeFP32Softmax(nn.Module):
         x: [..., N, 32] FP32脉冲
         Returns: Softmax(x) [..., N, 32] FP32脉冲
         """
-        self.reset()
-
         # x的形状: [..., N, 32]
         N = x.shape[-2]
 
@@ -50,7 +48,6 @@ class SpikeFP32Softmax(nn.Module):
         # Step 2: 计算 sum(exp(x_j)) - 累加有依赖，需要循环
         sum_exp = exp_x[..., 0, :]  # [..., 32]
         for i in range(1, N):
-            self.adder.reset()
             sum_exp = self.adder(sum_exp, exp_x[..., i, :])
 
         # Step 3: exp(x_i) / sum(exp(x_j)) for all i (向量化)

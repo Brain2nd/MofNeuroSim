@@ -99,22 +99,22 @@ def test_layernorm_distribution():
 def test_layernorm_invariance():
     """测试 LayerNorm 的缩放平移不变性"""
     from atomic_ops import SpikeFP32LayerNorm
-    
+
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"\n测试 LayerNorm 缩放平移不变性 (device={device})")
     print("=" * 50)
-    
+
     ln = SpikeFP32LayerNorm().to(device)
-    
+
     # 原始输入
     x1 = torch.tensor([[1.0, 2.0, 3.0, 4.0]], dtype=torch.float32, device=device)
-    
+
     # 缩放后的输入 (x * 2)
     x2 = x1 * 2
-    
+
     # 平移后的输入 (x + 10)
     x3 = x1 + 10
-    
+
     results = []
     for x, name in [(x1, "原始"), (x2, "缩放x2"), (x3, "平移+10")]:
         x_pulse = float32_to_pulse(x.cpu().numpy(), device)
@@ -123,19 +123,101 @@ def test_layernorm_invariance():
         result = pulse_to_float32(result_pulse)
         results.append(result)
         print(f"  {name}: {result.cpu().numpy()}")
-    
+
     # LayerNorm 应该对缩放和平移不变
     # 比较结果是否相近
     err12 = (results[0] - results[1]).abs().mean().item()
     err13 = (results[0] - results[2]).abs().mean().item()
-    
+
     print(f"  原始 vs 缩放 误差: {err12:.4f}")
     print(f"  原始 vs 平移 误差: {err13:.4f}")
-    
+
     passed = err12 < 0.2 and err13 < 0.2
     print(f"  {'✓ PASS' if passed else '✗ FAIL'}")
-    
+
     return passed
+
+
+def test_random_and_boundary():
+    """测试随机值和边界值 (CLAUDE.md #8: 随机+边界值)"""
+    from atomic_ops import SpikeFP32LayerNorm
+
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"\n测试随机值和边界值 (device={device})")
+    print("=" * 50)
+
+    ln = SpikeFP32LayerNorm().to(device)
+
+    torch.manual_seed(42)
+
+    # 边界值测试
+    boundary_cases = [
+        ([0.0, 0.0, 0.0, 1.0], "包含零"),
+        ([1.0, 1.0, 1.0, 1.0], "全相同"),
+        ([-1.0, -0.5, 0.5, 1.0], "对称分布"),
+        ([1e-5, 2e-5, 3e-5, 4e-5], "极小值"),
+        ([100.0, 200.0, 300.0, 400.0], "大值"),
+    ]
+
+    boundary_passed = 0
+    print("  边界值测试:")
+    for vals, desc in boundary_cases:
+        x = torch.tensor([vals], dtype=torch.float32, device=device)
+        x_pulse = float32_to_pulse(x.cpu().numpy(), device)
+
+        ln.reset()
+        result_pulse = ln(x_pulse)
+        result = pulse_to_float32(result_pulse)
+
+        # PyTorch 参考
+        expected = F.layer_norm(x, [4])
+
+        # 检查是否有 NaN/Inf
+        has_nan_inf = torch.isnan(result).any() or torch.isinf(result).any()
+
+        if not has_nan_inf:
+            boundary_passed += 1
+            print(f"    ✓ {desc}: 无 NaN/Inf")
+        else:
+            print(f"    ✗ {desc}: 存在 NaN/Inf")
+
+    # 随机值测试
+    n_random = 30
+    random_passed = 0
+    print(f"\n  随机值测试 ({n_random} 个):")
+
+    for i in range(n_random):
+        # 随机维度和值
+        dim = torch.randint(4, 16, (1,)).item()
+        x = torch.randn(1, dim, dtype=torch.float32, device=device) * 5 + torch.randn(1).item() * 3
+        x_pulse = float32_to_pulse(x.cpu().numpy(), device)
+
+        ln.reset()
+        result_pulse = ln(x_pulse)
+        result = pulse_to_float32(result_pulse)
+
+        # PyTorch 参考
+        expected = F.layer_norm(x, [dim])
+
+        # 检查输出均值接近0，标准差接近1
+        result_mean = result.mean().item()
+        result_std = result.std().item()
+
+        # 放宽阈值
+        mean_ok = abs(result_mean) < 0.5
+        std_ok = 0.5 < result_std < 2.0
+
+        if mean_ok and std_ok:
+            random_passed += 1
+
+    random_rate = random_passed / n_random * 100
+    print(f"    通过率: {random_passed}/{n_random} ({random_rate:.1f}%)")
+
+    boundary_rate = boundary_passed / len(boundary_cases) * 100
+    print(f"\n  边界值通过率: {boundary_rate:.1f}%")
+    print(f"  随机值通过率: {random_rate:.1f}%")
+
+    return boundary_rate >= 80 and random_rate >= 70
 
 
 def main():
@@ -148,6 +230,7 @@ def main():
     results.append(("基本功能", test_basic_layernorm()))
     results.append(("分布特性", test_layernorm_distribution()))
     results.append(("缩放平移不变性", test_layernorm_invariance()))
+    results.append(("随机+边界值测试", test_random_and_boundary()))
     
     print("\n" + "=" * 60)
     print("测试结果汇总")

@@ -14,7 +14,10 @@
 向量化支持
 ----------
 - 阈值/泄漏率支持标量、向量、张量
-- 延迟初始化：param_shape='auto' 时根据首次输入形状确定
+- 动态扩展初始化：param_shape='auto' 时根据输入形状自动扩展
+  - 首次调用：初始化为当前输入位宽
+  - 后续调用：如果输入位宽更大，自动扩展参数
+  - forward时：根据实际输入位宽动态切片参数
 - 可训练参数：trainable_threshold/trainable_beta
 
 作者: MofNeuroSim Project
@@ -48,7 +51,7 @@ class SimpleIFNode(nn.Module):
         trainable_threshold: 是否允许训练阈值
         threshold_shape: 延迟初始化时的目标形状
             - None: 使用标量阈值 (默认)
-            - 'auto': 根据首次输入形状自动确定 (排除batch维)
+            - 'auto': 动态扩展模式 - 自动扩展以适应不同位宽输入
             - tuple: 指定形状
     """
     def __init__(self,
@@ -101,35 +104,62 @@ class SimpleIFNode(nn.Module):
                 self._v_threshold = value.clone()
             self._threshold_initialized = True
 
-    def _maybe_initialize_threshold(self, x: torch.Tensor):
-        """延迟初始化：根据输入形状创建参数"""
-        if self._threshold_initialized or self.threshold_shape is None:
+    def _maybe_expand_threshold(self, x: torch.Tensor):
+        """动态扩展初始化：根据输入形状创建或扩展参数
+
+        - 首次调用：初始化为当前输入位宽
+        - 后续调用：如果输入位宽更大，扩展参数
+        """
+        if self.threshold_shape is None:
             return
 
-        # 确定目标形状
+        # 确定当前输入的目标形状
         if self.threshold_shape == 'auto':
-            # 匹配除batch外的所有维度
-            target_shape = x.shape[1:] if x.dim() > 1 else (1,)
+            input_shape = x.shape[1:] if x.dim() > 1 else (1,)
         else:
-            target_shape = self.threshold_shape
+            input_shape = self.threshold_shape
 
-        threshold_tensor = torch.full(
-            target_shape,
-            self._v_threshold_default,
-            device=x.device,
-            dtype=x.dtype
-        )
+        # 首次初始化
+        if not self._threshold_initialized or self._v_threshold is None:
+            threshold_tensor = torch.full(
+                input_shape,
+                self._v_threshold_default,
+                device=x.device,
+                dtype=x.dtype
+            )
+            if self.trainable_threshold:
+                self._v_threshold = nn.Parameter(threshold_tensor)
+            else:
+                self.register_buffer('_v_threshold', threshold_tensor)
+            self._threshold_initialized = True
+            return
 
-        if self.trainable_threshold:
-            self._v_threshold = nn.Parameter(threshold_tensor)
-        else:
-            self.register_buffer('_v_threshold', threshold_tensor)
-
-        self._threshold_initialized = True
+        # 检查是否需要扩展（仅对 'auto' 模式）
+        if self.threshold_shape == 'auto':
+            current_shape = self._v_threshold.shape
+            # 比较最后一个维度（位宽）
+            if len(input_shape) > 0 and len(current_shape) > 0:
+                input_bits = input_shape[-1]
+                current_bits = current_shape[-1]
+                if input_bits > current_bits:
+                    # 需要扩展：创建新的更大的 tensor
+                    new_shape = input_shape[:-1] + (input_bits,)
+                    new_threshold = torch.full(
+                        new_shape,
+                        self._v_threshold_default,
+                        device=self._v_threshold.device,
+                        dtype=self._v_threshold.dtype
+                    )
+                    # 复制旧值到新 tensor 的前 current_bits 位
+                    new_threshold[..., :current_bits] = self._v_threshold
+                    if self.trainable_threshold:
+                        self._v_threshold = nn.Parameter(new_threshold)
+                    else:
+                        self._v_threshold = new_threshold
 
     def forward(self, x):
-        # 延迟初始化（如果配置了 threshold_shape）
-        self._maybe_initialize_threshold(x)
+        # 动态扩展初始化（如果配置了 threshold_shape）
+        self._maybe_expand_threshold(x)
 
         # 重新初始化 v 如果形状不匹配（支持多次调用不同大小输入）
         if self.v is None or self.v.shape != x.shape:
@@ -138,10 +168,15 @@ class SimpleIFNode(nn.Module):
         # 膜电位积累
         self.v = self.v + x
 
-        # 获取阈值（标量或张量）
+        # 获取阈值（标量或张量，支持动态切片）
         threshold = self.v_threshold
         if isinstance(threshold, (int, float)):
             threshold = torch.tensor(threshold, device=x.device, dtype=x.dtype)
+        elif self.threshold_shape == 'auto' and threshold.dim() > 0:
+            # 动态切片：根据输入位宽切片阈值
+            input_bits = x.shape[-1] if x.dim() > 0 else 1
+            if threshold.shape[-1] > input_bits:
+                threshold = threshold[..., :input_bits]
 
         # 发放判断（支持广播）
         spike = (self.v >= threshold).float()
@@ -157,6 +192,14 @@ class SimpleIFNode(nn.Module):
                                  self.v)
 
         return spike
+
+    def reset_state(self):
+        """只重置膜电位，保留参数初始化状态（高效版本）
+
+        用于 SpikeMode.BIT_EXACT 模式下的高频调用。
+        与 reset() 不同，此方法不会重置参数初始化状态。
+        """
+        self.v = None
 
     def reset(self):
         """重置神经元状态"""
@@ -219,7 +262,7 @@ class SimpleLIFNode(nn.Module):
         trainable_threshold: 是否训练阈值
         param_shape: 延迟初始化的参数形状
             - None: 使用标量参数 (默认)
-            - 'auto': 根据首次输入形状自动确定
+            - 'auto': 动态扩展模式 - 自动扩展以适应不同位宽输入
             - tuple: 指定形状
     """
     # 默认泄漏因子：极小泄漏，保持位精确但增加信息熵
@@ -316,55 +359,103 @@ class SimpleLIFNode(nn.Module):
                 self._v_threshold = value.clone()
             self._threshold_initialized = True
 
-    def _maybe_initialize_params(self, x: torch.Tensor):
-        """延迟初始化：根据输入形状创建参数"""
-        if self._params_initialized or self.param_shape is None:
+    def _maybe_expand_params(self, x: torch.Tensor):
+        """动态扩展初始化：根据输入形状创建或扩展参数
+
+        - 首次调用：初始化为当前输入位宽
+        - 后续调用：如果输入位宽更大，扩展参数
+        """
+        if self.param_shape is None:
             return
 
-        # 确定目标形状
+        # 确定当前输入的目标形状
         if self.param_shape == 'auto':
-            target_shape = x.shape[1:] if x.dim() > 1 else (1,)
+            input_shape = x.shape[1:] if x.dim() > 1 else (1,)
         else:
-            target_shape = self.param_shape
+            input_shape = self.param_shape
 
-        # 初始化 beta
-        if not self._beta_initialized:
-            beta_tensor = torch.full(target_shape, self._beta_default,
-                                    device=x.device, dtype=x.dtype)
-            if self.trainable_beta:
-                self._beta = nn.Parameter(beta_tensor)
-            else:
-                self.register_buffer('_beta', beta_tensor)
-            self._beta_initialized = True
+        # 首次初始化
+        if not self._params_initialized:
+            # 初始化 beta
+            if not self._beta_initialized:
+                beta_tensor = torch.full(input_shape, self._beta_default,
+                                        device=x.device, dtype=x.dtype)
+                if self.trainable_beta:
+                    self._beta = nn.Parameter(beta_tensor)
+                else:
+                    self.register_buffer('_beta', beta_tensor)
+                self._beta_initialized = True
 
-        # 初始化 threshold
-        if not self._threshold_initialized:
-            threshold_tensor = torch.full(target_shape, self._threshold_default,
-                                         device=x.device, dtype=x.dtype)
-            if self.trainable_threshold:
-                self._v_threshold = nn.Parameter(threshold_tensor)
-            else:
-                self.register_buffer('_v_threshold', threshold_tensor)
-            self._threshold_initialized = True
+            # 初始化 threshold
+            if not self._threshold_initialized:
+                threshold_tensor = torch.full(input_shape, self._threshold_default,
+                                             device=x.device, dtype=x.dtype)
+                if self.trainable_threshold:
+                    self._v_threshold = nn.Parameter(threshold_tensor)
+                else:
+                    self.register_buffer('_v_threshold', threshold_tensor)
+                self._threshold_initialized = True
 
-        self._params_initialized = True
+            self._params_initialized = True
+            return
+
+        # 检查是否需要扩展（仅对 'auto' 模式）
+        if self.param_shape == 'auto' and len(input_shape) > 0:
+            input_bits = input_shape[-1]
+
+            # 扩展 beta
+            if self._beta is not None and self._beta.dim() > 0:
+                current_bits = self._beta.shape[-1]
+                if input_bits > current_bits:
+                    new_shape = input_shape[:-1] + (input_bits,)
+                    new_beta = torch.full(new_shape, self._beta_default,
+                                         device=self._beta.device, dtype=self._beta.dtype)
+                    new_beta[..., :current_bits] = self._beta
+                    if self.trainable_beta:
+                        self._beta = nn.Parameter(new_beta)
+                    else:
+                        self._beta = new_beta
+
+            # 扩展 threshold
+            if self._v_threshold is not None and self._v_threshold.dim() > 0:
+                current_bits = self._v_threshold.shape[-1]
+                if input_bits > current_bits:
+                    new_shape = input_shape[:-1] + (input_bits,)
+                    new_threshold = torch.full(new_shape, self._threshold_default,
+                                              device=self._v_threshold.device,
+                                              dtype=self._v_threshold.dtype)
+                    new_threshold[..., :current_bits] = self._v_threshold
+                    if self.trainable_threshold:
+                        self._v_threshold = nn.Parameter(new_threshold)
+                    else:
+                        self._v_threshold = new_threshold
 
     def forward(self, x):
-        # 延迟初始化
-        self._maybe_initialize_params(x)
+        # 动态扩展初始化
+        self._maybe_expand_params(x)
 
         # 重新初始化 v 如果形状不匹配（支持多次调用不同大小输入）
         if self.v is None or self.v.shape != x.shape:
             self.v = torch.zeros_like(x)
 
-        # 获取参数（支持广播）
+        # 获取参数（支持广播和动态切片）
         beta = self.beta
         threshold = self.v_threshold
+        input_bits = x.shape[-1] if x.dim() > 0 else 1
 
         if isinstance(beta, (int, float)):
             beta = torch.tensor(beta, device=x.device, dtype=x.dtype)
+        elif self.param_shape == 'auto' and beta.dim() > 0:
+            # 动态切片
+            if beta.shape[-1] > input_bits:
+                beta = beta[..., :input_bits]
+
         if isinstance(threshold, (int, float)):
             threshold = torch.tensor(threshold, device=x.device, dtype=x.dtype)
+        elif self.param_shape == 'auto' and threshold.dim() > 0:
+            # 动态切片
+            if threshold.shape[-1] > input_bits:
+                threshold = threshold[..., :input_bits]
 
         # LIF 动力学: V = beta * V + I（支持广播）
         self.v = beta * self.v + x
@@ -384,13 +475,38 @@ class SimpleLIFNode(nn.Module):
 
         return spike
 
+    def reset_state(self):
+        """只重置膜电位，保留参数初始化状态（高效版本）
+
+        用于 SpikeMode.BIT_EXACT 模式下的高频调用。
+        与 reset() 不同，此方法不会重置参数初始化状态，
+        避免在每次 forward 调用时重新初始化张量参数。
+        """
+        self.v = None
+
     def reset(self):
         """重置神经元状态"""
         self.v = None
+        # 重置参数初始化状态，以支持不同输入形状
+        self._params_initialized = False
+        self._beta_initialized = False
+        self._threshold_initialized = False
+        # 清除已初始化的参数
+        if hasattr(self, '_beta') and self._beta is not None:
+            self._beta = None
+        if hasattr(self, '_v_threshold') and self._v_threshold is not None:
+            self._v_threshold = None
 
     def _reset(self):
         """内部reset方法 - 由父组件调用"""
         self.v = None
+        self._params_initialized = False
+        self._beta_initialized = False
+        self._threshold_initialized = False
+        if hasattr(self, '_beta') and self._beta is not None:
+            self._beta = None
+        if hasattr(self, '_v_threshold') and self._v_threshold is not None:
+            self._v_threshold = None
 
 
 class DynamicThresholdIFNode(nn.Module):

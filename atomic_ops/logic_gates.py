@@ -85,6 +85,7 @@ import torch
 import torch.nn as nn
 from copy import deepcopy
 from .neurons import SimpleIFNode, SimpleLIFNode
+from .spike_mode import SpikeMode
 
 
 # ==============================================================================
@@ -153,13 +154,13 @@ class BaseLogicGate(nn.Module):
 
 class ANDGate(BaseLogicGate):
     """AND 门 - 使用 IF/LIF 神经元实现
-    
+
     **数学原理**:
     ```
     V = A + B
     输出 = H(V - 1.5)  # Heaviside 阶跃函数
     ```
-    
+
     **真值表**:
     | A | B | V | 输出 |
     |---|---|---|------|
@@ -167,40 +168,44 @@ class ANDGate(BaseLogicGate):
     | 0 | 1 | 1 | 0    |
     | 1 | 0 | 1 | 0    |
     | 1 | 1 | 2 | 1    | ← 仅此情况 V > 1.5
-    
+
     门电路计数: 1 个 IF 神经元
-    
+
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
+        mode: SpikeMode 模式覆盖，None 表示跟随全局/上下文
     """
-    def __init__(self, neuron_template=None):
+    def __init__(self, neuron_template=None, mode=None):
         super().__init__()
         self.node = _create_neuron(neuron_template, threshold=1.5)
-        
+        self._instance_mode = mode
+
     def forward(self, x_a, x_b):
-        # NOTE: reset由父组件统一调用，此处不再自动reset
+        if SpikeMode.should_reset(self._instance_mode):
+            self.reset_state()
         return self.node(x_a + x_b)
 
-    def reset(self):
-        self.node.reset()
-
-    def _reset(self):
-        """内部reset - 由父组件调用"""
-        if hasattr(self.node, '_reset'):
-            self.node._reset()
+    def reset_state(self):
+        """只重置膜电位（高效版本）"""
+        if hasattr(self.node, 'reset_state'):
+            self.node.reset_state()
         else:
             self.node.reset()
+
+    def reset(self):
+        """完全重置"""
+        self.node.reset()
 
 
 class ORGate(BaseLogicGate):
     """OR 门 - 使用 IF/LIF 神经元实现
-    
+
     **数学原理**:
     ```
     V = A + B
     输出 = H(V - 0.5)
     ```
-    
+
     **真值表**:
     | A | B | V | 输出 |
     |---|---|---|------|
@@ -208,27 +213,33 @@ class ORGate(BaseLogicGate):
     | 0 | 1 | 1 | 1    |
     | 1 | 0 | 1 | 1    |
     | 1 | 1 | 2 | 1    |
-    
+
     门电路计数: 1 个 IF 神经元
-    
+
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
+        mode: SpikeMode 模式覆盖，None 表示跟随全局/上下文
     """
-    def __init__(self, neuron_template=None):
+    def __init__(self, neuron_template=None, mode=None):
         super().__init__()
         self.node = _create_neuron(neuron_template, threshold=0.5)
-        
+        self._instance_mode = mode
+
     def forward(self, x_a, x_b):
+        if SpikeMode.should_reset(self._instance_mode):
+            self.reset_state()
         return self.node(x_a + x_b)
 
-    def reset(self):
-        self.node.reset()
-
-    def _reset(self):
-        if hasattr(self.node, '_reset'):
-            self.node._reset()
+    def reset_state(self):
+        """只重置膜电位（高效版本）"""
+        if hasattr(self.node, 'reset_state'):
+            self.node.reset_state()
         else:
             self.node.reset()
+
+    def reset(self):
+        """完全重置"""
+        self.node.reset()
 
 
 class XORGate(BaseLogicGate):
@@ -244,18 +255,23 @@ class XORGate(BaseLogicGate):
 
     Args:
         neuron_template: 神经元模板
+        mode: SpikeMode 模式覆盖，None 表示跟随全局/上下文
     """
-    def __init__(self, neuron_template=None):
+    def __init__(self, neuron_template=None, mode=None):
         super().__init__()
+        self._instance_mode = mode
         # 内部实例化 NOT 门 - 使用两个独立实例避免状态累积
-        self.not_a_gate = NOTGate(neuron_template)
-        self.not_b_gate = NOTGate(neuron_template)
+        self.not_a_gate = NOTGate(neuron_template, mode=mode)
+        self.not_b_gate = NOTGate(neuron_template, mode=mode)
         # 组合逻辑
         self.and1 = _create_neuron(neuron_template, threshold=1.5)  # A AND NOT_B
         self.and2 = _create_neuron(neuron_template, threshold=1.5)  # NOT_A AND B
         self.or_out = _create_neuron(neuron_template, threshold=0.5)  # 输出 OR
 
     def forward(self, x_a, x_b):
+        # 内部神经元的 reset 由模式控制
+        if SpikeMode.should_reset(self._instance_mode):
+            self._reset_internal_nodes()
         # 使用 SNN 门生成反相信号 - 每个输入使用独立的NOT门
         not_a = self.not_a_gate(x_a)
         not_b = self.not_b_gate(x_b)
@@ -267,7 +283,22 @@ class XORGate(BaseLogicGate):
 
         return out_spike
 
+    def _reset_internal_nodes(self):
+        """重置内部神经元节点"""
+        for node in [self.and1, self.and2, self.or_out]:
+            if hasattr(node, 'reset_state'):
+                node.reset_state()
+            else:
+                node.reset()
+
+    def reset_state(self):
+        """只重置膜电位（高效版本）"""
+        self.not_a_gate.reset_state()
+        self.not_b_gate.reset_state()
+        self._reset_internal_nodes()
+
     def reset(self):
+        """完全重置"""
         self.not_a_gate.reset()
         self.not_b_gate.reset()
         self.and1.reset()
@@ -283,32 +314,44 @@ class XORGate(BaseLogicGate):
 
 class NOTGate(BaseLogicGate):
     """NOT 门 - 神经形态抑制实现 (Neuromorphic Inhibition)
-    
+
     **纯 SNN 原理**:
     不再使用 `1.0 - x` 数学计算。而是使用抑制性神经元模型：
     - 恒定偏置电流 (Bias) = 1.5
     - 输入信号作为抑制输入 (Weight = -1.0)
     - 阈值 (Threshold) = 1.0
-    
+
     **动力学**:
     - Input=0: I_net = 1.5 - 0 = 1.5 (> 1.0) -> Spike (1)
     - Input=1: I_net = 1.5 - 1 = 0.5 (< 1.0) -> No Spike (0)
-    
+
     这模拟了物理上的"常开+抑制"电路，符合 SNN 纯度要求。
-    
+
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
+        mode: SpikeMode 模式覆盖，None 表示跟随全局/上下文
     """
-    def __init__(self, neuron_template=None):
+    def __init__(self, neuron_template=None, mode=None):
         super().__init__()
         # 阈值设为 1.0
         self.node = _create_neuron(neuron_template, threshold=1.0)
-        
+        self._instance_mode = mode
+
     def forward(self, x):
+        if SpikeMode.should_reset(self._instance_mode):
+            self.reset_state()
         # 物理模拟: Bias(1.5) + Inhibitory Input(-x)
         return self.node(1.5 - x)
 
+    def reset_state(self):
+        """只重置膜电位（高效版本）"""
+        if hasattr(self.node, 'reset_state'):
+            self.node.reset_state()
+        else:
+            self.node.reset()
+
     def reset(self):
+        """完全重置"""
         self.node.reset()
 
     def _reset(self):
@@ -322,18 +365,20 @@ class XNORGate(nn.Module):
     """XNOR门：当两个输入相同时输出1
     XNOR = NOT(XOR) = (a AND b) OR (NOT_a AND NOT_b)
     纯SNN实现：使用NOTGate代替直接的1-x操作
-    
+
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
+        mode: SpikeMode 模式覆盖，None 表示跟随全局/上下文
     """
-    def __init__(self, neuron_template=None):
+    def __init__(self, neuron_template=None, mode=None):
         super().__init__()
-        self.not_a = NOTGate(neuron_template)  # NOT(a)
-        self.not_b = NOTGate(neuron_template)  # NOT(b)
-        self.and1 = ANDGate(neuron_template)   # a AND b
-        self.and2 = ANDGate(neuron_template)   # NOT_a AND NOT_b
-        self.or1 = ORGate(neuron_template)
-        
+        self._instance_mode = mode
+        self.not_a = NOTGate(neuron_template, mode=mode)
+        self.not_b = NOTGate(neuron_template, mode=mode)
+        self.and1 = ANDGate(neuron_template, mode=mode)
+        self.and2 = ANDGate(neuron_template, mode=mode)
+        self.or1 = ORGate(neuron_template, mode=mode)
+
     def forward(self, a, b):
         ab = self.and1(a, b)
         na = self.not_a(a)
@@ -341,7 +386,16 @@ class XNORGate(nn.Module):
         na_nb = self.and2(na, nb)
         return self.or1(ab, na_nb)
 
+    def reset_state(self):
+        """只重置膜电位（高效版本）"""
+        self.not_a.reset_state()
+        self.not_b.reset_state()
+        self.and1.reset_state()
+        self.and2.reset_state()
+        self.or1.reset_state()
+
     def reset(self):
+        """完全重置"""
         self.not_a.reset()
         self.not_b.reset()
         self.and1.reset()
@@ -355,22 +409,31 @@ class XNORGate(nn.Module):
 
 class AND4Gate(nn.Module):
     """四输入AND门
-    
+
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
+        mode: SpikeMode 模式覆盖，None 表示跟随全局/上下文
     """
-    def __init__(self, neuron_template=None):
+    def __init__(self, neuron_template=None, mode=None):
         super().__init__()
-        self.and1 = ANDGate(neuron_template)
-        self.and2 = ANDGate(neuron_template)
-        self.and3 = ANDGate(neuron_template)
-        
+        self._instance_mode = mode
+        self.and1 = ANDGate(neuron_template, mode=mode)
+        self.and2 = ANDGate(neuron_template, mode=mode)
+        self.and3 = ANDGate(neuron_template, mode=mode)
+
     def forward(self, a, b, c, d):
         ab = self.and1(a, b)
         cd = self.and2(c, d)
         return self.and3(ab, cd)
 
+    def reset_state(self):
+        """只重置膜电位（高效版本）"""
+        self.and1.reset_state()
+        self.and2.reset_state()
+        self.and3.reset_state()
+
     def reset(self):
+        """完全重置"""
         self.and1.reset()
         self.and2.reset()
         self.and3.reset()
@@ -386,16 +449,27 @@ class SpikeDetector(nn.Module):
 
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
+        mode: SpikeMode 模式覆盖，None 表示跟随全局/上下文
     """
-    def __init__(self, neuron_template=None):
+    def __init__(self, neuron_template=None, mode=None):
         super().__init__()
         self.node = _create_neuron(neuron_template, threshold=0.5)
+        self._instance_mode = mode
 
     def forward(self, x):
-        # NOTE: reset由父组件统一调用，此处不再自动reset
+        if SpikeMode.should_reset(self._instance_mode):
+            self.reset_state()
         return self.node(x)
 
+    def reset_state(self):
+        """只重置膜电位（高效版本）"""
+        if hasattr(self.node, 'reset_state'):
+            self.node.reset_state()
+        else:
+            self.node.reset()
+
     def reset(self):
+        """完全重置"""
         self.node.reset()
 
     def _reset(self):
@@ -404,6 +478,7 @@ class SpikeDetector(nn.Module):
         else:
             self.node.reset()
 
+
 class MUXGate(nn.Module):
     """脉冲MUX选择器：MUX(S, A, B) = OR(AND(S, A), AND(NOT_S, B))
     当S=1时选择A，S=0时选择B
@@ -411,22 +486,31 @@ class MUXGate(nn.Module):
 
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
+        mode: SpikeMode 模式覆盖，None 表示跟随全局/上下文
     """
-    def __init__(self, neuron_template=None):
+    def __init__(self, neuron_template=None, mode=None):
         super().__init__()
-        self.not_s = NOTGate(neuron_template)  # NOT(S)
-        self.and1 = ANDGate(neuron_template)   # S AND A
-        self.and2 = ANDGate(neuron_template)   # NOT_S AND B
-        self.or1 = ORGate(neuron_template)
+        self._instance_mode = mode
+        self.not_s = NOTGate(neuron_template, mode=mode)
+        self.and1 = ANDGate(neuron_template, mode=mode)
+        self.and2 = ANDGate(neuron_template, mode=mode)
+        self.or1 = ORGate(neuron_template, mode=mode)
 
     def forward(self, s, a, b):
-        # NOTE: reset由父组件统一调用，此处不再自动reset
         ns = self.not_s(s)
         sa = self.and1(s, a)
         nsb = self.and2(ns, b)
         return self.or1(sa, nsb)
 
+    def reset_state(self):
+        """只重置膜电位（高效版本）"""
+        self.not_s.reset_state()
+        self.and1.reset_state()
+        self.and2.reset_state()
+        self.or1.reset_state()
+
     def reset(self):
+        """完全重置"""
         self.not_s.reset()
         self.and1.reset()
         self.and2.reset()
@@ -441,18 +525,25 @@ class OR3Gate(nn.Module):
 
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
+        mode: SpikeMode 模式覆盖，None 表示跟随全局/上下文
     """
-    def __init__(self, neuron_template=None):
+    def __init__(self, neuron_template=None, mode=None):
         super().__init__()
-        self.or1 = ORGate(neuron_template)
-        self.or2 = ORGate(neuron_template)
+        self._instance_mode = mode
+        self.or1 = ORGate(neuron_template, mode=mode)
+        self.or2 = ORGate(neuron_template, mode=mode)
 
     def forward(self, a, b, c):
-        # NOTE: reset由父组件统一调用，此处不再自动reset
         ab = self.or1(a, b)
         return self.or2(ab, c)
 
+    def reset_state(self):
+        """只重置膜电位（高效版本）"""
+        self.or1.reset_state()
+        self.or2.reset_state()
+
     def reset(self):
+        """完全重置"""
         self.or1.reset()
         self.or2.reset()
 
@@ -485,22 +576,29 @@ class HalfAdder(nn.Module):
 
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
+        mode: SpikeMode 模式覆盖，None 表示跟随全局/上下文
 
     Returns:
         (S, C): 和位与进位位
     """
-    def __init__(self, neuron_template=None):
+    def __init__(self, neuron_template=None, mode=None):
         super().__init__()
-        self.xor1 = XORGate(neuron_template)
-        self.and1 = ANDGate(neuron_template)
+        self._instance_mode = mode
+        self.xor1 = XORGate(neuron_template, mode=mode)
+        self.and1 = ANDGate(neuron_template, mode=mode)
 
     def forward(self, a, b):
-        # NOTE: reset由父组件统一调用，此处不再自动reset
         s = self.xor1(a, b)   # S = A ⊕ B
         c = self.and1(a, b)   # C = A ∧ B
         return s, c
 
+    def reset_state(self):
+        """只重置膜电位（高效版本）"""
+        self.xor1.reset_state()
+        self.and1.reset_state()
+
     def reset(self):
+        """完全重置"""
         self.xor1.reset()
         self.and1.reset()
 
@@ -533,20 +631,21 @@ class FullAdder(nn.Module):
 
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
+        mode: SpikeMode 模式覆盖，None 表示跟随全局/上下文
 
     Returns:
         (S, Cout): 和位与进位输出
     """
-    def __init__(self, neuron_template=None):
+    def __init__(self, neuron_template=None, mode=None):
         super().__init__()
-        self.xor1 = XORGate(neuron_template)
-        self.xor2 = XORGate(neuron_template)
-        self.and1 = ANDGate(neuron_template)
-        self.and2 = ANDGate(neuron_template)
-        self.or1 = ORGate(neuron_template)
+        self._instance_mode = mode
+        self.xor1 = XORGate(neuron_template, mode=mode)
+        self.xor2 = XORGate(neuron_template, mode=mode)
+        self.and1 = ANDGate(neuron_template, mode=mode)
+        self.and2 = ANDGate(neuron_template, mode=mode)
+        self.or1 = ORGate(neuron_template, mode=mode)
 
     def forward(self, a, b, cin):
-        # NOTE: reset由父组件统一调用，此处不再自动reset
         s1 = self.xor1(a, b)       # A ⊕ B
         sum_out = self.xor2(s1, cin)  # S = (A ⊕ B) ⊕ Cin
         c1 = self.and1(a, b)       # A ∧ B
@@ -554,7 +653,16 @@ class FullAdder(nn.Module):
         cout = self.or1(c1, c2)    # Cout = c1 ∨ c2
         return sum_out, cout
 
+    def reset_state(self):
+        """只重置膜电位（高效版本）"""
+        self.xor1.reset_state()
+        self.xor2.reset_state()
+        self.and1.reset_state()
+        self.and2.reset_state()
+        self.or1.reset_state()
+
     def reset(self):
+        """完全重置"""
         self.xor1.reset()
         self.xor2.reset()
         self.and1.reset()
@@ -568,13 +676,13 @@ class FullAdder(nn.Module):
 
 class RippleCarryAdder(nn.Module):
     """行波进位加法器 - N 位二进制加法
-    
+
     **数学公式**:
     ```
     对于 i = 0 to N-1:
         S[i], C[i+1] = FullAdder(A[i], B[i], C[i])
     ```
-    
+
     **电路结构** (4位示例):
     ```
     A[0] B[0]   A[1] B[1]   A[2] B[2]   A[3] B[3]
@@ -583,22 +691,24 @@ class RippleCarryAdder(nn.Module):
          │          │          │          │
         S[0]       S[1]       S[2]       S[3]
     ```
-    
+
     **注意**: 输入格式为 LSB first (最低位在索引 0)
-    
+
     Args:
         bits: 加法器位宽
         neuron_template: 神经元模板，None 使用默认 IF 神经元
-        
+        mode: SpikeMode 模式覆盖，None 表示跟随全局/上下文
+
     门电路计数: bits × 7 = 7N IF 神经元
-    
+
     Returns:
         (Sum, Cout): N位和 与 最终进位
     """
-    def __init__(self, bits=4, neuron_template=None):
+    def __init__(self, bits=4, neuron_template=None, mode=None):
         super().__init__()
         self.bits = bits
-        self.adders = nn.ModuleList([FullAdder(neuron_template) for _ in range(bits)])
+        self._instance_mode = mode
+        self.adders = nn.ModuleList([FullAdder(neuron_template, mode=mode) for _ in range(bits)])
         
     def forward(self, A, B, Cin=None):
         """
@@ -625,7 +735,13 @@ class RippleCarryAdder(nn.Module):
             
         return torch.cat(sum_bits, dim=-1), c
 
+    def reset_state(self):
+        """只重置膜电位（高效版本）"""
+        for adder in self.adders:
+            adder.reset_state()
+
     def reset(self):
+        """完全重置"""
         for adder in self.adders:
             adder.reset()
 
@@ -636,17 +752,19 @@ class RippleCarryAdder(nn.Module):
 
 class ORTree(nn.Module):
     """N输入OR树，纯SNN实现
-    
+
     Args:
         n_inputs: 输入数量
         neuron_template: 神经元模板，None 使用默认 IF 神经元
+        mode: SpikeMode 模式覆盖，None 表示跟随全局/上下文
     """
-    def __init__(self, n_inputs, neuron_template=None):
+    def __init__(self, n_inputs, neuron_template=None, mode=None):
         super().__init__()
         self.n_inputs = n_inputs
+        self._instance_mode = mode
         # 构建二叉OR树
         n_gates = n_inputs - 1 if n_inputs > 1 else 0
-        self.or_gates = nn.ModuleList([ORGate(neuron_template) for _ in range(n_gates)])
+        self.or_gates = nn.ModuleList([ORGate(neuron_template, mode=mode) for _ in range(n_gates)])
         
     def forward(self, inputs):
         """
@@ -676,8 +794,14 @@ class ORTree(nn.Module):
             current = next_level
         
         return current[0]
-    
+
+    def reset_state(self):
+        """只重置膜电位（高效版本）"""
+        for gate in self.or_gates:
+            gate.reset_state()
+
     def reset(self):
+        """完全重置"""
         for gate in self.or_gates:
             gate.reset()
 
@@ -688,16 +812,18 @@ class ORTree(nn.Module):
 
 class ANDTree(nn.Module):
     """N输入AND树，纯SNN实现
-    
+
     Args:
         n_inputs: 输入数量
         neuron_template: 神经元模板，None 使用默认 IF 神经元
+        mode: SpikeMode 模式覆盖，None 表示跟随全局/上下文
     """
-    def __init__(self, n_inputs, neuron_template=None):
+    def __init__(self, n_inputs, neuron_template=None, mode=None):
         super().__init__()
         self.n_inputs = n_inputs
+        self._instance_mode = mode
         n_gates = n_inputs - 1 if n_inputs > 1 else 0
-        self.and_gates = nn.ModuleList([ANDGate(neuron_template) for _ in range(n_gates)])
+        self.and_gates = nn.ModuleList([ANDGate(neuron_template, mode=mode) for _ in range(n_gates)])
         
     def forward(self, inputs):
         if isinstance(inputs, list):
@@ -723,8 +849,14 @@ class ANDTree(nn.Module):
             current = next_level
         
         return current[0]
-    
+
+    def reset_state(self):
+        """只重置膜电位（高效版本）"""
+        for gate in self.and_gates:
+            gate.reset_state()
+
     def reset(self):
+        """完全重置"""
         for gate in self.and_gates:
             gate.reset()
 
@@ -735,26 +867,28 @@ class ANDTree(nn.Module):
 
 class FirstSpikeDetector(nn.Module):
     """纯SNN首脉冲检测器
-    
+
     输入: spike_train [batch, T] - 脉冲序列
     输出: one_hot [batch, T] - 只有首脉冲位置为1
-    
+
     原理: first_spike[t] = spike[t] AND NOT(any_previous_spike[t])
     any_previous_spike[t] = OR(spike[0], spike[1], ..., spike[t-1])
-    
+
     Args:
         max_steps: 最大时间步
         neuron_template: 神经元模板，None 使用默认 IF 神经元
+        mode: SpikeMode 模式覆盖，None 表示跟随全局/上下文
     """
-    def __init__(self, max_steps, neuron_template=None):
+    def __init__(self, max_steps, neuron_template=None, mode=None):
         super().__init__()
         self.max_steps = max_steps
+        self._instance_mode = mode
         # OR门用于累积"之前是否有脉冲"
-        self.or_gates = nn.ModuleList([ORGate(neuron_template) for _ in range(max_steps - 1)])
+        self.or_gates = nn.ModuleList([ORGate(neuron_template, mode=mode) for _ in range(max_steps - 1)])
         # AND门用于输出首脉冲
-        self.and_gates = nn.ModuleList([ANDGate(neuron_template) for _ in range(max_steps)])
+        self.and_gates = nn.ModuleList([ANDGate(neuron_template, mode=mode) for _ in range(max_steps)])
         # NOT门
-        self.not_gates = nn.ModuleList([NOTGate(neuron_template) for _ in range(max_steps)])
+        self.not_gates = nn.ModuleList([NOTGate(neuron_template, mode=mode) for _ in range(max_steps)])
         
     def forward(self, spike_train):
         """
@@ -781,11 +915,23 @@ class FirstSpikeDetector(nn.Module):
                 prev_any = self.or_gates[t](prev_any, current)
         
         return torch.cat(first_spikes, dim=-1)
-    
+
+    def reset_state(self):
+        """只重置膜电位（高效版本）"""
+        for gate in self.or_gates:
+            gate.reset_state()
+        for gate in self.and_gates:
+            gate.reset_state()
+        for gate in self.not_gates:
+            gate.reset_state()
+
     def reset(self):
+        """完全重置"""
         for gate in self.or_gates:
             gate.reset()
         for gate in self.and_gates:
+            gate.reset()
+        for gate in self.not_gates:
             gate.reset()
 
     def _reset(self):
@@ -799,26 +945,28 @@ class FirstSpikeDetector(nn.Module):
 
 class OneHotToExponent(nn.Module):
     """将首脉冲位置(one-hot)转换为4位二进制指数
-    
+
     纯SNN实现：
     - 预计算每个位置对应的指数值
     - 对于每个指数位：OR所有该位为1的位置的AND结果
-    
+
     E[b] = OR over all k where exponent[k] has bit b=1
-    
+
     Args:
         max_steps: 最大时间步
         n_integer_bits: 整数位数
         bias: 指数偏置
         e_bits: 指数位数
         neuron_template: 神经元模板，None 使用默认 IF 神经元
+        mode: SpikeMode 模式覆盖，None 表示跟随全局/上下文
     """
-    def __init__(self, max_steps, n_integer_bits, bias=7, e_bits=4, neuron_template=None):
+    def __init__(self, max_steps, n_integer_bits, bias=7, e_bits=4, neuron_template=None, mode=None):
         super().__init__()
         self.max_steps = max_steps
         self.e_bits = e_bits
         self.bias = bias
-        
+        self._instance_mode = mode
+
         # 预计算每个位置的指数
         # 位置k → E = clamp(n_integer_bits - 1 - k + bias, 0, 2^e_bits - 1)
         max_e = (1 << e_bits) - 1
@@ -827,33 +975,33 @@ class OneHotToExponent(nn.Module):
             e = (n_integer_bits - 1) - k + bias
             e = max(0, min(e, max_e))
             self.exponents.append(e)
-        
+
         # 为每个指数位创建AND门（选择该位置的贡献）
         # 以及OR树合并所有贡献
         self.and_gates = nn.ModuleList()
         self.or_trees = nn.ModuleList()
-        
+
         for b in range(e_bits):
             # 找出哪些位置的该指数位为1
             positions_with_bit = []
             for k in range(max_steps):
                 if (self.exponents[k] >> (e_bits - 1 - b)) & 1:
                     positions_with_bit.append(k)
-            
+
             if len(positions_with_bit) > 0:
-                self.and_gates.append(nn.ModuleList([ANDGate(neuron_template) for _ in positions_with_bit]))
+                self.and_gates.append(nn.ModuleList([ANDGate(neuron_template, mode=mode) for _ in positions_with_bit]))
                 if len(positions_with_bit) > 1:
-                    self.or_trees.append(ORTree(len(positions_with_bit), neuron_template))
+                    self.or_trees.append(ORTree(len(positions_with_bit), neuron_template, mode=mode))
                 else:
                     self.or_trees.append(None)
             else:
                 self.and_gates.append(None)
                 self.or_trees.append(None)
-        
+
         # 记录哪些位置对应哪个bit
         self.positions_per_bit = []
         for b in range(e_bits):
-            positions = [k for k in range(max_steps) 
+            positions = [k for k in range(max_steps)
                         if (self.exponents[k] >> (e_bits - 1 - b)) & 1]
             self.positions_per_bit.append(positions)
     
@@ -891,8 +1039,19 @@ class OneHotToExponent(nn.Module):
                 e_bits_out.append(bit_val)
         
         return torch.cat(e_bits_out, dim=-1)
-    
+
+    def reset_state(self):
+        """只重置膜电位（高效版本）"""
+        for gates in self.and_gates:
+            if gates is not None:
+                for g in gates:
+                    g.reset_state()
+        for tree in self.or_trees:
+            if tree is not None:
+                tree.reset_state()
+
     def reset(self):
+        """完全重置"""
         for gates in self.and_gates:
             if gates is not None:
                 for g in gates:
@@ -913,46 +1072,48 @@ class OneHotToExponent(nn.Module):
 
 class NormalMantissaExtractor(nn.Module):
     """从脉冲序列中提取Normal数的尾数
-    
+
     原理：首脉冲在位置k，尾数是spike[k+1], spike[k+2], spike[k+3]
-    
+
     纯SNN实现：
     M[i] = OR over all k: (first_spike[k] AND spike[k+1+i])
-    
+
     Args:
         max_steps: 最大时间步
         m_bits: 尾数位数
         neuron_template: 神经元模板，None 使用默认 IF 神经元
+        mode: SpikeMode 模式覆盖，None 表示跟随全局/上下文
     """
-    def __init__(self, max_steps, m_bits=3, neuron_template=None):
+    def __init__(self, max_steps, m_bits=3, neuron_template=None, mode=None):
         super().__init__()
         self.max_steps = max_steps
         self.m_bits = m_bits
-        
+        self._instance_mode = mode
+
         # 对于每个尾数位，为每个可能的首脉冲位置创建AND门
         # M[i] = OR over k: (first_spike[k] AND spike[k+1+i])
         self.and_gates = nn.ModuleList()
         self.or_trees = nn.ModuleList()
-        
+
         for m_idx in range(m_bits):
             # 有效位置：首脉冲位置k使得k+1+m_idx < max_steps
-            valid_positions = [k for k in range(max_steps) 
+            valid_positions = [k for k in range(max_steps)
                               if k + 1 + m_idx < max_steps]
-            
+
             if len(valid_positions) > 0:
-                self.and_gates.append(nn.ModuleList([ANDGate(neuron_template) for _ in valid_positions]))
+                self.and_gates.append(nn.ModuleList([ANDGate(neuron_template, mode=mode) for _ in valid_positions]))
                 if len(valid_positions) > 1:
-                    self.or_trees.append(ORTree(len(valid_positions), neuron_template))
+                    self.or_trees.append(ORTree(len(valid_positions), neuron_template, mode=mode))
                 else:
                     self.or_trees.append(None)
             else:
                 self.and_gates.append(None)
                 self.or_trees.append(None)
-        
+
         # 记录每个尾数位的有效位置
         self.valid_positions = []
         for m_idx in range(m_bits):
-            self.valid_positions.append([k for k in range(max_steps) 
+            self.valid_positions.append([k for k in range(max_steps)
                                         if k + 1 + m_idx < max_steps])
     
     def forward(self, first_spike_onehot, spike_train):
@@ -994,7 +1155,18 @@ class NormalMantissaExtractor(nn.Module):
         
         return torch.cat(m_bits_out, dim=-1)
 
+    def reset_state(self):
+        """只重置膜电位（高效版本）"""
+        for gates in self.and_gates:
+            if gates is not None:
+                for g in gates:
+                    g.reset_state()
+        for tree in self.or_trees:
+            if tree is not None:
+                tree.reset_state()
+
     def reset(self):
+        """完全重置"""
         for gates in self.and_gates:
             if gates is not None:
                 for g in gates:
@@ -1015,18 +1187,20 @@ class NormalMantissaExtractor(nn.Module):
 
 class PriorityEncoder8(nn.Module):
     """8-bit Priority Encoder (Leading One Detector) - Pure SNN
-    
+
     Input: P [batch, 8] (Little Endian: P0...P7)
     Output: Valid [batch, 8] (One-Hot, only the MSB '1' is active)
-    
+
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
+        mode: SpikeMode 模式覆盖，None 表示跟随全局/上下文
     """
-    def __init__(self, neuron_template=None):
+    def __init__(self, neuron_template=None, mode=None):
         super().__init__()
-        self.or_chain = nn.ModuleList([ORGate(neuron_template) for _ in range(7)])
-        self.not_gates = nn.ModuleList([NOTGate(neuron_template) for _ in range(8)])
-        self.and_gates = nn.ModuleList([ANDGate(neuron_template) for _ in range(8)])
+        self._instance_mode = mode
+        self.or_chain = nn.ModuleList([ORGate(neuron_template, mode=mode) for _ in range(7)])
+        self.not_gates = nn.ModuleList([NOTGate(neuron_template, mode=mode) for _ in range(8)])
+        self.and_gates = nn.ModuleList([ANDGate(neuron_template, mode=mode) for _ in range(8)])
         
     def forward(self, P):
         p_bits = [P[..., i:i+1] for i in range(8)]
@@ -1051,7 +1225,14 @@ class PriorityEncoder8(nn.Module):
                 
         return torch.cat(valid, dim=-1)
 
+    def reset_state(self):
+        """只重置膜电位（高效版本）"""
+        for g in self.or_chain: g.reset_state()
+        for g in self.not_gates: g.reset_state()
+        for g in self.and_gates: g.reset_state()
+
     def reset(self):
+        """完全重置"""
         for g in self.or_chain: g.reset()
         for g in self.not_gates: g.reset()
         for g in self.and_gates: g.reset()
@@ -1067,15 +1248,17 @@ class PriorityEncoder8(nn.Module):
 
 class ShiftAmountEncoder8to3(nn.Module):
     """Encode One-Hot 8-bit to 3-bit Binary - Pure SNN
-    
+
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
+        mode: SpikeMode 模式覆盖，None 表示跟随全局/上下文
     """
-    def __init__(self, neuron_template=None):
+    def __init__(self, neuron_template=None, mode=None):
         super().__init__()
-        self.or_tree_s0 = ORTree(4, neuron_template)
-        self.or_tree_s1 = ORTree(4, neuron_template)
-        self.or_tree_s2 = ORTree(4, neuron_template)
+        self._instance_mode = mode
+        self.or_tree_s0 = ORTree(4, neuron_template, mode=mode)
+        self.or_tree_s1 = ORTree(4, neuron_template, mode=mode)
+        self.or_tree_s2 = ORTree(4, neuron_template, mode=mode)
         
     def forward(self, V):
         v = [V[..., i:i+1] for i in range(8)]
@@ -1091,7 +1274,14 @@ class ShiftAmountEncoder8to3(nn.Module):
         
         return torch.cat([s0, s1, s2], dim=-1)
 
+    def reset_state(self):
+        """只重置膜电位（高效版本）"""
+        self.or_tree_s0.reset_state()
+        self.or_tree_s1.reset_state()
+        self.or_tree_s2.reset_state()
+
     def reset(self):
+        """完全重置"""
         self.or_tree_s0.reset()
         self.or_tree_s1.reset()
         self.or_tree_s2.reset()
@@ -1103,15 +1293,17 @@ class ShiftAmountEncoder8to3(nn.Module):
 
 class BarrelShifter8(nn.Module):
     """8-bit Left Barrel Shifter - Pure SNN
-    
+
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
+        mode: SpikeMode 模式覆盖，None 表示跟随全局/上下文
     """
-    def __init__(self, neuron_template=None):
+    def __init__(self, neuron_template=None, mode=None):
         super().__init__()
-        self.mux_s4 = nn.ModuleList([MUXGate(neuron_template) for _ in range(8)])
-        self.mux_s2 = nn.ModuleList([MUXGate(neuron_template) for _ in range(8)])
-        self.mux_s1 = nn.ModuleList([MUXGate(neuron_template) for _ in range(8)])
+        self._instance_mode = mode
+        self.mux_s4 = nn.ModuleList([MUXGate(neuron_template, mode=mode) for _ in range(8)])
+        self.mux_s2 = nn.ModuleList([MUXGate(neuron_template, mode=mode) for _ in range(8)])
+        self.mux_s1 = nn.ModuleList([MUXGate(neuron_template, mode=mode) for _ in range(8)])
         
     def forward(self, P, S):
         zeros = torch.zeros_like(P[..., 0:1])
@@ -1147,7 +1339,14 @@ class BarrelShifter8(nn.Module):
             
         return torch.cat(stage3, dim=-1)
 
+    def reset_state(self):
+        """只重置膜电位（高效版本）"""
+        for m in self.mux_s4: m.reset_state()
+        for m in self.mux_s2: m.reset_state()
+        for m in self.mux_s1: m.reset_state()
+
     def reset(self):
+        """完全重置"""
         for m in self.mux_s4: m.reset()
         for m in self.mux_s2: m.reset()
         for m in self.mux_s1: m.reset()
@@ -1160,19 +1359,21 @@ class BarrelShifter8(nn.Module):
 
 class ExponentAdjuster(nn.Module):
     """Convert One-Hot Position to 5-bit Exponent Adjustment - Pure SNN
-    
+
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
+        mode: SpikeMode 模式覆盖，None 表示跟随全局/上下文
     """
-    def __init__(self, neuron_template=None):
+    def __init__(self, neuron_template=None, mode=None):
         super().__init__()
-        self.or_tree_e0 = ORTree(8, neuron_template)
-        self.or_tree_e1 = ORTree(8, neuron_template)
-        self.or_tree_e2 = ORTree(8, neuron_template)
-        self.or_tree_e3 = ORTree(8, neuron_template)
-        self.or_tree_e4 = ORTree(8, neuron_template)
-        self.nor_all_valid = NOTGate(neuron_template)
-        self.or_tree_valid = ORTree(8, neuron_template)
+        self._instance_mode = mode
+        self.or_tree_e0 = ORTree(8, neuron_template, mode=mode)
+        self.or_tree_e1 = ORTree(8, neuron_template, mode=mode)
+        self.or_tree_e2 = ORTree(8, neuron_template, mode=mode)
+        self.or_tree_e3 = ORTree(8, neuron_template, mode=mode)
+        self.or_tree_e4 = ORTree(8, neuron_template, mode=mode)
+        self.nor_all_valid = NOTGate(neuron_template, mode=mode)
+        self.or_tree_valid = ORTree(8, neuron_template, mode=mode)
         
     def forward(self, V):
         v = [V[..., i:i+1] for i in range(8)]
@@ -1203,13 +1404,25 @@ class ExponentAdjuster(nn.Module):
         
         return torch.cat([e0, e1, e2, e3, e4], dim=-1)
 
+    def reset_state(self):
+        """只重置膜电位（高效版本）"""
+        self.or_tree_e0.reset_state()
+        self.or_tree_e1.reset_state()
+        self.or_tree_e2.reset_state()
+        self.or_tree_e3.reset_state()
+        self.or_tree_e4.reset_state()
+        self.or_tree_valid.reset_state()
+        self.nor_all_valid.reset_state()
+
     def reset(self):
+        """完全重置"""
         self.or_tree_e0.reset()
         self.or_tree_e1.reset()
         self.or_tree_e2.reset()
         self.or_tree_e3.reset()
         self.or_tree_e4.reset()
         self.or_tree_valid.reset()
+        self.nor_all_valid.reset()
 
     def _reset(self):
         for tree in [self.or_tree_e0, self.or_tree_e1, self.or_tree_e2,
@@ -1220,16 +1433,18 @@ class ExponentAdjuster(nn.Module):
 
 class NewNormalizationUnit(nn.Module):
     """Integrated Pure SNN Normalization Unit
-    
+
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
+        mode: SpikeMode 模式覆盖，None 表示跟随全局/上下文
     """
-    def __init__(self, neuron_template=None):
+    def __init__(self, neuron_template=None, mode=None):
         super().__init__()
-        self.priority_encoder = PriorityEncoder8(neuron_template)
-        self.shift_encoder = ShiftAmountEncoder8to3(neuron_template)
-        self.barrel_shifter = BarrelShifter8(neuron_template)
-        self.exponent_adjuster = ExponentAdjuster(neuron_template)
+        self._instance_mode = mode
+        self.priority_encoder = PriorityEncoder8(neuron_template, mode=mode)
+        self.shift_encoder = ShiftAmountEncoder8to3(neuron_template, mode=mode)
+        self.barrel_shifter = BarrelShifter8(neuron_template, mode=mode)
+        self.exponent_adjuster = ExponentAdjuster(neuron_template, mode=mode)
         
     def forward(self, P):
         # P is Little Endian [P0...P7]
@@ -1266,7 +1481,15 @@ class NewNormalizationUnit(nn.Module):
         # 返回 shift_amt 用于 Subnormal 路径修正
         return p_norm, exp_adj, sticky_extra, overflow, shift_amt
 
+    def reset_state(self):
+        """只重置膜电位（高效版本）"""
+        self.priority_encoder.reset_state()
+        self.shift_encoder.reset_state()
+        self.barrel_shifter.reset_state()
+        self.exponent_adjuster.reset_state()
+
     def reset(self):
+        """完全重置"""
         self.priority_encoder.reset()
         self.shift_encoder.reset()
         self.barrel_shifter.reset()
@@ -1280,32 +1503,34 @@ class NewNormalizationUnit(nn.Module):
 
 class TemporalExponentGenerator(nn.Module):
     """时序指数生成器 (纯SNN)
-    
+
     原理：
     - 内部维护一个4-bit递减计数器，初始值为最大指数 (E_max)。
     - 每个时间步，如果还没有检测到首脉冲，计数器减1。
     - 当检测到首脉冲时，当前的计数器值即为指数 E。
     - 如果减到0还没有首脉冲，保持为0 (Subnormal/Zero)。
-    
+
     Args:
         start_value: 初始计数器值
         bits: 计数器位数
         neuron_template: 神经元模板，None 使用默认 IF 神经元
+        mode: SpikeMode 模式覆盖，None 表示跟随全局/上下文
     """
-    def __init__(self, start_value=15, bits=4, neuron_template=None):
+    def __init__(self, start_value=15, bits=4, neuron_template=None, mode=None):
         super().__init__()
         self.bits = bits
         self.start_value = start_value
-        
+        self._instance_mode = mode
+
         # 4-bit 减法器 (加 -1)
-        self.adder = RippleCarryAdder(bits=bits, neuron_template=neuron_template)
-        
+        self.adder = RippleCarryAdder(bits=bits, neuron_template=neuron_template, mode=mode)
+
         # 状态寄存器 (4位)
         self.register_buffer('state', None)
-        
+
         # 辅助门
-        self.mux_update = nn.ModuleList([MUXGate(neuron_template) for _ in range(bits)])
-        self.not_gate = NOTGate(neuron_template)
+        self.mux_update = nn.ModuleList([MUXGate(neuron_template, mode=mode) for _ in range(bits)])
+        self.not_gate = NOTGate(neuron_template, mode=mode)
         
     def forward(self, has_fired, time_step_pulse):
         batch_size = has_fired.shape[0]
@@ -1338,11 +1563,20 @@ class TemporalExponentGenerator(nn.Module):
             
         self.state = torch.cat(new_state_list, dim=-1)
         return self.state
-    
+
+    def reset_state(self):
+        """只重置膜电位（高效版本）"""
+        self.state = None
+        self.adder.reset_state()
+        for m in self.mux_update: m.reset_state()
+        self.not_gate.reset_state()
+
     def reset(self):
+        """完全重置"""
         self.state = None
         self.adder.reset()
         for m in self.mux_update: m.reset()
+        self.not_gate.reset()
 
     def _reset(self):
         self.state = None
@@ -1355,20 +1589,29 @@ class TemporalExponentGenerator(nn.Module):
 class DelayNode(nn.Module):
     """纯SNN延迟单元 (D触发器)
     out[t] = in[t-1]
+
+    Args:
+        mode: SpikeMode 模式覆盖，None 表示跟随全局/上下文
     """
-    def __init__(self):
+    def __init__(self, mode=None):
         super().__init__()
+        self._instance_mode = mode
         self.register_buffer('state', None)
-        
+
     def forward(self, x):
         if self.state is None:
             self.state = torch.zeros_like(x)
-        
+
         out = self.state
         self.state = x
         return out
-    
+
+    def reset_state(self):
+        """只重置状态（高效版本）"""
+        self.state = None
+
     def reset(self):
+        """完全重置"""
         self.state = None
 
     def _reset(self):
@@ -1377,31 +1620,33 @@ class DelayNode(nn.Module):
 
 class ArrayMultiplier4x4_Strict(nn.Module):
     """4x4 位阵列乘法器
-    
+
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
+        mode: SpikeMode 模式覆盖，None 表示跟随全局/上下文
     """
-    def __init__(self, neuron_template=None):
+    def __init__(self, neuron_template=None, mode=None):
         super().__init__()
-        self.pp_gates = nn.ModuleList([ANDGate(neuron_template) for _ in range(16)])
-        
+        self._instance_mode = mode
+        self.pp_gates = nn.ModuleList([ANDGate(neuron_template, mode=mode) for _ in range(16)])
+
         # Row 1: 1 HA, 3 FA
-        self.row1_ha = HalfAdder(neuron_template)
-        self.row1_fa1 = FullAdder(neuron_template)
-        self.row1_fa2 = FullAdder(neuron_template)
-        self.row1_fa3 = FullAdder(neuron_template) 
-        
+        self.row1_ha = HalfAdder(neuron_template, mode=mode)
+        self.row1_fa1 = FullAdder(neuron_template, mode=mode)
+        self.row1_fa2 = FullAdder(neuron_template, mode=mode)
+        self.row1_fa3 = FullAdder(neuron_template, mode=mode)
+
         # Row 2: 1 HA, 3 FA
-        self.row2_ha = HalfAdder(neuron_template)
-        self.row2_fa1 = FullAdder(neuron_template)
-        self.row2_fa2 = FullAdder(neuron_template)
-        self.row2_fa3 = FullAdder(neuron_template)
-        
+        self.row2_ha = HalfAdder(neuron_template, mode=mode)
+        self.row2_fa1 = FullAdder(neuron_template, mode=mode)
+        self.row2_fa2 = FullAdder(neuron_template, mode=mode)
+        self.row2_fa3 = FullAdder(neuron_template, mode=mode)
+
         # Row 3: 1 HA, 3 FA
-        self.row3_ha = HalfAdder(neuron_template)
-        self.row3_fa1 = FullAdder(neuron_template)
-        self.row3_fa2 = FullAdder(neuron_template)
-        self.row3_fa3 = FullAdder(neuron_template)
+        self.row3_ha = HalfAdder(neuron_template, mode=mode)
+        self.row3_fa1 = FullAdder(neuron_template, mode=mode)
+        self.row3_fa2 = FullAdder(neuron_template, mode=mode)
+        self.row3_fa3 = FullAdder(neuron_template, mode=mode)
 
     def forward(self, A, B):
         # Generate Partial Products
@@ -1441,7 +1686,24 @@ class ArrayMultiplier4x4_Strict(nn.Module):
         
         return torch.cat([out0, out1, out2, out3, out4, out5, out6, out7], dim=-1)
 
+    def reset_state(self):
+        """只重置膜电位（高效版本）"""
+        for g in self.pp_gates: g.reset_state()
+        self.row1_ha.reset_state()
+        self.row1_fa1.reset_state()
+        self.row1_fa2.reset_state()
+        self.row1_fa3.reset_state()
+        self.row2_ha.reset_state()
+        self.row2_fa1.reset_state()
+        self.row2_fa2.reset_state()
+        self.row2_fa3.reset_state()
+        self.row3_ha.reset_state()
+        self.row3_fa1.reset_state()
+        self.row3_fa2.reset_state()
+        self.row3_fa3.reset_state()
+
     def reset(self):
+        """完全重置"""
         for g in self.pp_gates: g.reset()
         self.row1_ha.reset()
         self.row1_fa1.reset()
@@ -1467,18 +1729,20 @@ class ArrayMultiplier4x4_Strict(nn.Module):
 
 class Denormalizer(nn.Module):
     """Right Barrel Shifter for Denormalization
-    
+
     Input: P [batch, 8], Shift [batch, 3]
     Output: P >> Shift
-    
+
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
+        mode: SpikeMode 模式覆盖，None 表示跟随全局/上下文
     """
-    def __init__(self, neuron_template=None):
+    def __init__(self, neuron_template=None, mode=None):
         super().__init__()
-        self.mux_s4 = nn.ModuleList([MUXGate(neuron_template) for _ in range(8)])
-        self.mux_s2 = nn.ModuleList([MUXGate(neuron_template) for _ in range(8)])
-        self.mux_s1 = nn.ModuleList([MUXGate(neuron_template) for _ in range(8)])
+        self._instance_mode = mode
+        self.mux_s4 = nn.ModuleList([MUXGate(neuron_template, mode=mode) for _ in range(8)])
+        self.mux_s2 = nn.ModuleList([MUXGate(neuron_template, mode=mode) for _ in range(8)])
+        self.mux_s1 = nn.ModuleList([MUXGate(neuron_template, mode=mode) for _ in range(8)])
         
     def forward(self, P, S):
         # P: Little Endian
@@ -1518,7 +1782,14 @@ class Denormalizer(nn.Module):
 
         return torch.cat(stage3, dim=-1)
 
+    def reset_state(self):
+        """只重置膜电位（高效版本）"""
+        for m in self.mux_s4: m.reset_state()
+        for m in self.mux_s2: m.reset_state()
+        for m in self.mux_s1: m.reset_state()
+
     def reset(self):
+        """完全重置"""
         for m in self.mux_s4: m.reset()
         for m in self.mux_s2: m.reset()
         for m in self.mux_s1: m.reset()

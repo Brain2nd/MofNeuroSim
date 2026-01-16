@@ -59,41 +59,37 @@ class SpikeFP32GELU(nn.Module):
         输入: [..., 32] FP32脉冲
         输出: [..., 32] FP32脉冲 GELU(x)
         """
-        self.reset()
         device = x.device
         batch_shape = x.shape[:-1]
-        
+
         # FP32 -> FP64
         x_fp64 = self.fp32_to_fp64(x)
-        
+
         # 1.702 * x
         const_1702 = make_fp64_constant(1.702, batch_shape, device)
         x_scaled = self.fp64_mul(const_1702, x_fp64)
-        
+
         # sigmoid(1.702 * x) = 1 / (1 + exp(-1.702 * x))
         # -1.702 * x (翻转符号位)
         neg_x_scaled_sign = self.sign_not(x_scaled[..., 0:1])
         neg_x_scaled = torch.cat([neg_x_scaled_sign, x_scaled[..., 1:]], dim=-1)
-        
+
         # exp(-1.702 * x)
         exp_neg = self.fp64_exp(neg_x_scaled)
-        
+
         # 1 + exp(-1.702 * x)
         one_fp64 = make_fp64_constant(1.0, batch_shape, device)
-        self.fp64_adder.reset()
         one_plus_exp = self.fp64_adder(one_fp64, exp_neg)
-        
+
         # 1 / (1 + exp(-1.702 * x)) = sigmoid(1.702 * x)
-        self.fp64_divider.reset()
         sigmoid_result = self.fp64_divider(one_fp64, one_plus_exp)
-        
+
         # x * sigmoid(1.702 * x)
-        self.fp64_mul.reset()
         result_fp64 = self.fp64_mul(x_fp64, sigmoid_result)
-        
+
         # FP64 -> FP32
         result_fp32 = self.fp64_to_fp32(result_fp64)
-        
+
         return result_fp32
     
     def reset(self):
@@ -134,69 +130,59 @@ class SpikeFP32GELUExact(nn.Module):
         输入: [..., 32] FP32脉冲
         输出: [..., 32] FP32脉冲 GELU(x)
         """
-        self.reset()
         device = x.device
         batch_shape = x.shape[:-1]
-        
+
         # FP32 -> FP64
         x_fp64 = self.fp32_to_fp64(x)
-        
+
         # 常量
         const_0_5 = make_fp64_constant(0.5, batch_shape, device)
         const_1 = make_fp64_constant(1.0, batch_shape, device)
         const_2 = make_fp64_constant(2.0, batch_shape, device)
         const_0044715 = make_fp64_constant(0.044715, batch_shape, device)
         sqrt_2_pi = make_fp64_constant(0.7978845608028654, batch_shape, device)  # sqrt(2/π)
-        
+
         # x³ = x * x * x
         x_sq = self.fp64_mul(x_fp64, x_fp64)
-        self.fp64_mul.reset()
         x_cubed = self.fp64_mul(x_sq, x_fp64)
-        
+
         # 0.044715 * x³
-        self.fp64_mul.reset()
         term = self.fp64_mul(const_0044715, x_cubed)
-        
+
         # x + 0.044715 * x³
         inner = self.fp64_adder(x_fp64, term)
-        
+
         # sqrt(2/π) * (x + 0.044715 * x³)
-        self.fp64_mul.reset()
         inner_scaled = self.fp64_mul(sqrt_2_pi, inner)
-        
+
         # tanh(z) = (exp(2z) - 1) / (exp(2z) + 1)
-        self.fp64_mul.reset()
         two_z = self.fp64_mul(const_2, inner_scaled)
-        
+
         exp_2z = self.fp64_exp(two_z)
-        
+
         # exp(2z) - 1
         neg_1 = make_fp64_constant(-1.0, batch_shape, device)
-        self.fp64_adder.reset()
         exp_minus_1 = self.fp64_adder(exp_2z, neg_1)
-        
+
         # exp(2z) + 1
-        self.fp64_adder.reset()
         exp_plus_1 = self.fp64_adder(exp_2z, const_1)
-        
+
         # tanh = (exp(2z) - 1) / (exp(2z) + 1)
         tanh_result = self.fp64_divider(exp_minus_1, exp_plus_1)
-        
+
         # 1 + tanh(...)
-        self.fp64_adder.reset()
         one_plus_tanh = self.fp64_adder(const_1, tanh_result)
-        
+
         # x * (1 + tanh(...))
-        self.fp64_mul.reset()
         x_times = self.fp64_mul(x_fp64, one_plus_tanh)
-        
+
         # 0.5 * x * (1 + tanh(...))
-        self.fp64_mul.reset()
         result_fp64 = self.fp64_mul(const_0_5, x_times)
-        
+
         # FP64 -> FP32
         result_fp32 = self.fp64_to_fp32(result_fp64)
-        
+
         return result_fp32
     
     def reset(self):

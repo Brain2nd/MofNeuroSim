@@ -58,9 +58,9 @@ class SpikeFP8MulToFP32(nn.Module):
         # 符号
         self.sign_xor = XORGate(neuron_template=nt)
         
-        # 指数检测 (E=0 检测)
-        self.e_a_or = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(3)])
-        self.e_b_or = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(3)])
+        # 指数检测 (E=0 检测) - 单实例
+        self.e_a_or = ORGate(neuron_template=nt)
+        self.e_b_or = ORGate(neuron_template=nt)
         self.e_a_nonzero_or = ORGate(neuron_template=nt)
         self.e_b_nonzero_or = ORGate(neuron_template=nt)
         
@@ -104,9 +104,9 @@ class SpikeFP8MulToFP32(nn.Module):
         self.adj_ha1 = HalfAdder(neuron_template=nt)  # 高位加法
         self.adj_or = ORGate(neuron_template=nt)      # 进位处理
         
-        # 零检测
-        self.zero_mux_e = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(8)])
-        self.zero_mux_m = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(23)])
+        # 零检测 - 单实例
+        self.zero_mux_e = MUXGate(neuron_template=nt)
+        self.zero_mux_m = MUXGate(neuron_template=nt)
         
         # ===== 纯SNN NOT门 (替换 ones - x) =====
         self.not_e_a_nonzero = NOTGate(neuron_template=nt)
@@ -134,13 +134,13 @@ class SpikeFP8MulToFP32(nn.Module):
         self.and_adj_b_bit0 = ANDGate(neuron_template=nt)   # is_b_subnormal AND b_lead_at_1
         self.and_adj_b_bit1 = ANDGate(neuron_template=nt)   # is_b_subnormal AND b_lead_at_0
         
-        # ===== 纯SNN MUX门 (替换 sel*a + not_sel*b) =====
-        self.mux_eff_m_a = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(3)])  # 3位尾数
-        self.mux_eff_m_b = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(3)])
-        self.mux_e_eff_a = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(8)])
-        self.mux_e_eff_b = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(8)])
-        self.mux_final_exp = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(8)])
-        self.mux_final_mant = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(23)])
+        # ===== 纯SNN MUX门 (替换 sel*a + not_sel*b) ===== - 单实例
+        self.mux_eff_m_a = MUXGate(neuron_template=nt)  # 3位尾数
+        self.mux_eff_m_b = MUXGate(neuron_template=nt)
+        self.mux_e_eff_a = MUXGate(neuron_template=nt)
+        self.mux_e_eff_b = MUXGate(neuron_template=nt)
+        self.mux_final_exp = MUXGate(neuron_template=nt)
+        self.mux_final_mant = MUXGate(neuron_template=nt)
         
         # A 端前导位检测门电路
         self.and_a_lead_1 = ANDGate(neuron_template=nt)    # not_m2_a AND m1_a
@@ -152,15 +152,13 @@ class SpikeFP8MulToFP32(nn.Module):
         self.and_b_lead_0_1 = ANDGate(neuron_template=nt)  # not_m2_b AND not_m1_b
         self.and_b_lead_0_2 = ANDGate(neuron_template=nt)  # (not_m2_b AND not_m1_b) AND m0_b
         
-        # A 端 subnormal 尾数 MUX (3位 x 2)
-        self.mux_norm_m_a = nn.ModuleList([nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(3)]) for _ in range(2)])
-        # A 端 subnormal 指数 MUX (8位 x 2)
-        self.mux_e_sub_a = nn.ModuleList([nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(8)]) for _ in range(2)])
-        
-        # B 端 subnormal 尾数 MUX (3位 x 3)
-        self.mux_norm_m_b = nn.ModuleList([nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(3)]) for _ in range(2)])
-        # B 端 subnormal 指数 MUX (8位 x 2)
-        self.mux_e_sub_b = nn.ModuleList([nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(8)]) for _ in range(2)])
+        # A 端 subnormal 尾数/指数 MUX - 单实例
+        self.mux_norm_m_a = MUXGate(neuron_template=nt)
+        self.mux_e_sub_a = MUXGate(neuron_template=nt)
+
+        # B 端 subnormal 尾数/指数 MUX - 单实例
+        self.mux_norm_m_b = MUXGate(neuron_template=nt)
+        self.mux_e_sub_b = MUXGate(neuron_template=nt)
         
         # 进位计算 AND 门
         self.and_carry1b = ANDGate(neuron_template=nt)  # temp1 AND carry0
@@ -172,8 +170,6 @@ class SpikeFP8MulToFP32(nn.Module):
         Returns:
             [..., 32] FP32 脉冲 [S, E7..E0, M22..M0]
         """
-        self.reset_all()  # 高层组件统一reset
-
         # 支持广播
         A, B = torch.broadcast_tensors(A, B)
         
@@ -194,13 +190,13 @@ class SpikeFP8MulToFP32(nn.Module):
         # 符号
         s_out = self.sign_xor(s_a, s_b)
         
-        # E=0 检测
-        e_a_or_01 = self.e_a_or[0](e_a[..., 2:3], e_a[..., 3:4])
-        e_a_or_23 = self.e_a_or[1](e_a[..., 0:1], e_a[..., 1:2])
+        # E=0 检测 (tree reduction)
+        e_a_or_01 = self.e_a_or(e_a[..., 2:3], e_a[..., 3:4])
+        e_a_or_23 = self.e_a_or(e_a[..., 0:1], e_a[..., 1:2])
         e_a_nonzero = self.e_a_nonzero_or(e_a_or_01, e_a_or_23)
-        
-        e_b_or_01 = self.e_b_or[0](e_b[..., 2:3], e_b[..., 3:4])
-        e_b_or_23 = self.e_b_or[1](e_b[..., 0:1], e_b[..., 1:2])
+
+        e_b_or_01 = self.e_b_or(e_b[..., 2:3], e_b[..., 3:4])
+        e_b_or_23 = self.e_b_or(e_b[..., 0:1], e_b[..., 1:2])
         e_b_nonzero = self.e_b_nonzero_or(e_b_or_01, e_b_or_23)
         
         # M≠0 检测 (纯 SNN OR 门链)
@@ -239,13 +235,11 @@ class SpikeFP8MulToFP32(nn.Module):
         mant_at_2 = torch.cat([m1_a, m0_a, zeros], dim=-1)
         mant_at_1 = torch.cat([m0_a, zeros, zeros], dim=-1)
         mant_at_0 = torch.cat([zeros, zeros, zeros], dim=-1)
-        # 先选 at_0 vs at_1，再选结果 vs at_2
-        norm_m_a_bits = []
-        for i in range(3):
-            sel_01 = self.mux_norm_m_a[0][i](a_lead_at_0, mant_at_0[..., i:i+1], mant_at_1[..., i:i+1])
-            sel_final = self.mux_norm_m_a[1][i](a_lead_at_2, mant_at_2[..., i:i+1], sel_01)
-            norm_m_a_bits.append(sel_final)
-        norm_m_a = torch.cat(norm_m_a_bits, dim=-1)
+        # 先选 at_0 vs at_1，再选结果 vs at_2 (vectorized)
+        a_lead_at_0_3 = a_lead_at_0.expand_as(mant_at_0)
+        sel_01_a = self.mux_norm_m_a(a_lead_at_0_3, mant_at_0, mant_at_1)
+        a_lead_at_2_3 = a_lead_at_2.expand_as(mant_at_2)
+        norm_m_a = self.mux_norm_m_a(a_lead_at_2_3, mant_at_2, sel_01_a)
         
         # 有效 FP32 指数 (对于 subnormal)
         # lead_at_2 (M=4-7): 值 = 1.xxx × 2^(-7), FP32_E = 120
@@ -256,13 +250,11 @@ class SpikeFP8MulToFP32(nn.Module):
         e_sub_a_119 = torch.cat([zeros, ones, ones, ones, zeros, ones, ones, ones], dim=-1)  # 119
         e_sub_a_118 = torch.cat([zeros, ones, ones, ones, zeros, ones, ones, zeros], dim=-1)  # 118
         
-        # 使用 MUX 门选择指数 (纯SNN)
-        e_sub_a_bits = []
-        for i in range(8):
-            sel_01 = self.mux_e_sub_a[0][i](a_lead_at_0, e_sub_a_118[..., i:i+1], e_sub_a_119[..., i:i+1])
-            sel_final = self.mux_e_sub_a[1][i](a_lead_at_2, e_sub_a_120[..., i:i+1], sel_01)
-            e_sub_a_bits.append(sel_final)
-        e_sub_a = torch.cat(e_sub_a_bits, dim=-1)
+        # 使用 MUX 门选择指数 (vectorized)
+        a_lead_at_0_8 = a_lead_at_0.expand_as(e_sub_a_118)
+        sel_01_e_a = self.mux_e_sub_a(a_lead_at_0_8, e_sub_a_118, e_sub_a_119)
+        a_lead_at_2_8 = a_lead_at_2.expand_as(e_sub_a_120)
+        e_sub_a = self.mux_e_sub_a(a_lead_at_2_8, e_sub_a_120, sel_01_e_a)
         
         # B 同理 (纯SNN门电路)
         not_m2_b = self.not_m2_b(m2_b)
@@ -272,39 +264,31 @@ class SpikeFP8MulToFP32(nn.Module):
         b_lead_0_tmp = self.and_b_lead_0_1(not_m2_b, not_m1_b)
         b_lead_at_0 = self.and_b_lead_0_2(b_lead_0_tmp, m0_b)
         
-        # B 端归一化尾数 (纯SNN MUX)
+        # B 端归一化尾数 (vectorized)
         mant_b_at_2 = torch.cat([m1_b, m0_b, zeros], dim=-1)
         mant_b_at_1 = torch.cat([m0_b, zeros, zeros], dim=-1)
         mant_b_at_0 = torch.cat([zeros, zeros, zeros], dim=-1)
-        norm_m_b_bits = []
-        for i in range(3):
-            sel_01 = self.mux_norm_m_b[0][i](b_lead_at_0, mant_b_at_0[..., i:i+1], mant_b_at_1[..., i:i+1])
-            sel_final = self.mux_norm_m_b[1][i](b_lead_at_2, mant_b_at_2[..., i:i+1], sel_01)
-            norm_m_b_bits.append(sel_final)
-        norm_m_b = torch.cat(norm_m_b_bits, dim=-1)
-        
-        # B 端 subnormal 指数 (纯SNN MUX)
-        e_sub_b_bits = []
-        for i in range(8):
-            sel_01 = self.mux_e_sub_b[0][i](b_lead_at_0, e_sub_a_118[..., i:i+1], e_sub_a_119[..., i:i+1])
-            sel_final = self.mux_e_sub_b[1][i](b_lead_at_2, e_sub_a_120[..., i:i+1], sel_01)
-            e_sub_b_bits.append(sel_final)
-        e_sub_b = torch.cat(e_sub_b_bits, dim=-1)
+        b_lead_at_0_3 = b_lead_at_0.expand_as(mant_b_at_0)
+        sel_01_b = self.mux_norm_m_b(b_lead_at_0_3, mant_b_at_0, mant_b_at_1)
+        b_lead_at_2_3 = b_lead_at_2.expand_as(mant_b_at_2)
+        norm_m_b = self.mux_norm_m_b(b_lead_at_2_3, mant_b_at_2, sel_01_b)
+
+        # B 端 subnormal 指数 (vectorized)
+        b_lead_at_0_8 = b_lead_at_0.expand_as(e_sub_a_118)
+        sel_01_e_b = self.mux_e_sub_b(b_lead_at_0_8, e_sub_a_118, e_sub_a_119)
+        b_lead_at_2_8 = b_lead_at_2.expand_as(e_sub_a_120)
+        e_sub_b = self.mux_e_sub_b(b_lead_at_2_8, e_sub_a_120, sel_01_e_b)
         
         # ============================================================
         # 构建有效尾数和指数
         # ============================================================
-        # 有效尾数 (3位) (纯SNN MUX门)
+        # 有效尾数 (3位) (vectorized)
         not_is_a_subnormal = self.not_is_a_subnormal(is_a_subnormal)
         not_is_b_subnormal = self.not_is_b_subnormal(is_b_subnormal)
-        eff_m_a_bits = []
-        for i in range(3):
-            eff_m_a_bits.append(self.mux_eff_m_a[i](is_a_subnormal, norm_m_a[..., i:i+1], m_a[..., i:i+1]))
-        eff_m_a = torch.cat(eff_m_a_bits, dim=-1)
-        eff_m_b_bits = []
-        for i in range(3):
-            eff_m_b_bits.append(self.mux_eff_m_b[i](is_b_subnormal, norm_m_b[..., i:i+1], m_b[..., i:i+1]))
-        eff_m_b = torch.cat(eff_m_b_bits, dim=-1)
+        is_a_subnormal_3 = is_a_subnormal.expand_as(norm_m_a)
+        eff_m_a = self.mux_eff_m_a(is_a_subnormal_3, norm_m_a, m_a)
+        is_b_subnormal_3 = is_b_subnormal.expand_as(norm_m_b)
+        eff_m_b = self.mux_eff_m_b(is_b_subnormal_3, norm_m_b, m_b)
         
         # 隐藏位 (normal 或归一化后的 subnormal 都是 1)
         # 使用 OR 门: hidden = e_nonzero OR is_subnormal
@@ -339,15 +323,11 @@ class SpikeFP8MulToFP32(nn.Module):
         e_normal_b_lsb, _ = self.exp_add_normal_b(e_b_8bit_lsb, const_120_lsb)
         e_normal_b = e_normal_b_lsb.flip(-1)
         
-        # 选择有效 FP32 指数 (纯SNN MUX门)
-        e_eff_a_bits = []
-        for i in range(8):
-            e_eff_a_bits.append(self.mux_e_eff_a[i](is_a_subnormal, e_sub_a[..., i:i+1], e_normal_a[..., i:i+1]))
-        e_eff_a = torch.cat(e_eff_a_bits, dim=-1)
-        e_eff_b_bits = []
-        for i in range(8):
-            e_eff_b_bits.append(self.mux_e_eff_b[i](is_b_subnormal, e_sub_b[..., i:i+1], e_normal_b[..., i:i+1]))
-        e_eff_b = torch.cat(e_eff_b_bits, dim=-1)
+        # 选择有效 FP32 指数 (vectorized)
+        is_a_subnormal_8 = is_a_subnormal.expand_as(e_sub_a)
+        e_eff_a = self.mux_e_eff_a(is_a_subnormal_8, e_sub_a, e_normal_a)
+        is_b_subnormal_8 = is_b_subnormal.expand_as(e_sub_b)
+        e_eff_b = self.mux_e_eff_b(is_b_subnormal_8, e_sub_b, e_normal_b)
         
         # 乘积指数: E_out = E_a_eff + E_b_eff - 127 (因为两个都已经 biased 了)
         # 实际上: E_out_unbiased = E_a_eff_unbiased + E_b_eff_unbiased
@@ -449,11 +429,9 @@ class SpikeFP8MulToFP32(nn.Module):
         exp_sum = exp_base_lsb.flip(-1)  # 原始公式结果
         exp_norm = exp_norm_lsb.flip(-1)
         not_needs_norm = self.not_needs_norm(needs_norm)
-        # 选择指数 (纯SNN MUX门)
-        final_exp_pre_bits = []
-        for i in range(8):
-            final_exp_pre_bits.append(self.mux_final_exp[i](needs_norm, exp_norm[..., i:i+1], exp_sum[..., i:i+1]))
-        final_exp_pre = torch.cat(final_exp_pre_bits, dim=-1)
+        # 选择指数 (vectorized)
+        needs_norm_8 = needs_norm.expand_as(exp_norm)
+        final_exp_pre = self.mux_final_exp(needs_norm_8, exp_norm, exp_sum)
         
         # ============================================================
         # Subnormal 指数修正 (纯 SNN 减法器)
@@ -476,11 +454,9 @@ class SpikeFP8MulToFP32(nn.Module):
                                zeros, zeros, zeros, zeros, zeros, zeros, zeros, zeros,
                                zeros, zeros, zeros, zeros, zeros, zeros, zeros, zeros, zeros], dim=-1)
         
-        # 选择尾数 (纯SNN MUX门)
-        final_mant_bits = []
-        for i in range(23):
-            final_mant_bits.append(self.mux_final_mant[i](needs_norm, m_norm[..., i:i+1], m_no_norm[..., i:i+1]))
-        final_mant = torch.cat(final_mant_bits, dim=-1)
+        # 选择尾数 (vectorized)
+        needs_norm_23 = needs_norm.expand_as(m_norm)
+        final_mant = self.mux_final_mant(needs_norm_23, m_norm, m_no_norm)
         
         # ============================================================
         # 零检测 (纯 SNN)
@@ -491,18 +467,14 @@ class SpikeFP8MulToFP32(nn.Module):
         is_b_true_zero = self.and_b_true_zero(not_e_b_nonzero, not_m_b_or)  # 纯SNN AND
         is_zero = self.is_zero_or(is_a_true_zero, is_b_true_zero)
         
-        # 零时清零指数和尾数
-        result_exp = []
-        for i in range(8):
-            e = self.zero_mux_e[i](is_zero, zeros, final_exp[..., i:i+1])
-            result_exp.append(e)
-        result_exp = torch.cat(result_exp, dim=-1)
-        
-        result_mant = []
-        for i in range(23):
-            m = self.zero_mux_m[i](is_zero, zeros, final_mant[..., i:i+1])
-            result_mant.append(m)
-        result_mant = torch.cat(result_mant, dim=-1)
+        # 零时清零指数和尾数 (vectorized)
+        is_zero_8 = is_zero.expand_as(final_exp)
+        zero_exp = torch.zeros_like(final_exp)
+        result_exp = self.zero_mux_e(is_zero_8, zero_exp, final_exp)
+
+        is_zero_23 = is_zero.expand_as(final_mant)
+        zero_mant = torch.zeros_like(final_mant)
+        result_mant = self.zero_mux_m(is_zero_23, zero_mant, final_mant)
         
         # 组装 FP32
         fp32_pulse = torch.cat([s_out, result_exp, result_mant], dim=-1)

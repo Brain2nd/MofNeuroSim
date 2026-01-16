@@ -37,8 +37,6 @@ class SpikeFP32SiLU(nn.Module):
         x: [..., 32] FP32脉冲
         Returns: SiLU(x) [..., 32] FP32脉冲
         """
-        self.reset()
-        
         # Step 1: sigmoid(x)
         sig_x = self.sigmoid(x)
         

@@ -75,7 +75,6 @@ class SpikeFP32Embedding(nn.Module):
             [..., embed_dim, 32] FP32脉冲
         """
         assert self.weight_pulse is not None, "请先设置权重"
-        self.reset()  # 重置所有MUX门
 
         batch_shape = token_ids.shape
 

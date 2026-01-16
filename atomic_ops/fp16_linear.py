@@ -133,7 +133,6 @@ class SpikeFP16Linear_MultiPrecision(nn.Module):
             [..., out_features, 16] 输出 FP16 脉冲（所有模式输出都是FP16）
         """
         assert self.weight_pulse is not None, "需要先调用 set_weight_from_float"
-        self.reset_all()
 
         # 扩展输入以进行广播乘法
         # x: [..., in_features, 16] -> [..., 1, in_features, 16]

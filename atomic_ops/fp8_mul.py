@@ -342,9 +342,6 @@ class SpikeFP8Multiplier(nn.Module):
         # A, B: [..., 8] = S(1) E(4) M(3)
         # 支持广播：A和B可以有不同的前导维度
 
-        # 高层组件统一reset所有内部门电路
-        self.reset_all()
-
         A, B = torch.broadcast_tensors(A, B)
         
         # ===== 1. 符号 =====

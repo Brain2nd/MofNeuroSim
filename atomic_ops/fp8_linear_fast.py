@@ -74,7 +74,6 @@ class SpikeFP8Linear_Fast(nn.Module):
             [..., out_features, 8] 输出脉冲
         """
         assert self.weight_pulse is not None, "请先调用 set_weight_from_float 设置权重"
-        self.reset_all()  # 高层组件统一reset
 
         # x: [..., in_features, 8]
         # weight_pulse: [out_features, in_features, 8]

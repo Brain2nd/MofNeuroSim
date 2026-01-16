@@ -111,7 +111,6 @@ class SpikeFP32Linear(nn.Module):
             [..., out_features, 32] 输出 FP32 脉冲
         """
         assert self.weight_pulse is not None, "需要先调用 set_weight_from_float"
-        self.reset_all()  # 高层组件统一reset
 
         # x: [..., in_features, 32] -> [..., 1, in_features, 32]
         # weight: [out_features, in_features, 32]

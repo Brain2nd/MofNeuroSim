@@ -44,7 +44,6 @@ class SpikeFP32Sigmoid(nn.Module):
         x: [..., 32] FP32脉冲
         Returns: sigmoid(x) [..., 32] FP32脉冲
         """
-        self.reset()
         device = x.device
         batch_shape = x.shape[:-1]
         zeros = torch.zeros(batch_shape + (1,), device=device)

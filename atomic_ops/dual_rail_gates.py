@@ -147,9 +147,7 @@ class DualRailAND(nn.Module):
         # a, b: [..., 2] 双轨
         a_pos, a_neg = a[..., 0:1], a[..., 1:2]
         b_pos, b_neg = b[..., 0:1], b[..., 1:2]
-        
-        self.reset()
-        
+
         # Y_pos = A AND B (脉冲汇聚，阈值1.5)
         y_pos = self.and_node(a_pos + b_pos)
         
@@ -178,9 +176,7 @@ class DualRailOR(nn.Module):
     def forward(self, a, b):
         a_pos, a_neg = a[..., 0:1], a[..., 1:2]
         b_pos, b_neg = b[..., 0:1], b[..., 1:2]
-        
-        self.reset()
-        
+
         # Y_pos = A OR B
         y_pos = self.or_node(a_pos + b_pos)
         
@@ -219,9 +215,7 @@ class DualRailXOR(nn.Module):
     def forward(self, a, b):
         a_pos, a_neg = a[..., 0:1], a[..., 1:2]
         b_pos, b_neg = b[..., 0:1], b[..., 1:2]
-        
-        self.reset()
-        
+
         # XOR = (A_pos AND B_neg) OR (A_neg AND B_pos)
         term1 = self.and1(a_pos + b_neg)  # A AND NOT_B
         term2 = self.and2(a_neg + b_pos)  # NOT_A AND B
@@ -311,8 +305,6 @@ class DualRailFullAdder(nn.Module):
         self.or1 = DualRailOR(neuron_template)
     
     def forward(self, a, b, cin):
-        self.reset()
-        
         s1 = self.xor1(a, b)          # A XOR B
         sum_out = self.xor2(s1, cin)  # S = (A XOR B) XOR Cin
         

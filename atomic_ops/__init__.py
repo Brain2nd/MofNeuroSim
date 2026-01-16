@@ -2,10 +2,11 @@
 Atomic Ops Package - 100% 纯 SNN 门电路实现的浮点运算模块
 
 支持统一的神经元模板机制，可在 IF/LIF 之间切换用于物理仿真。
+支持位精确模式 (BIT_EXACT) 和时间动力学模式 (TEMPORAL) 灵活切换。
 
 使用示例:
 ```python
-from atomic_ops import ANDGate, SimpleLIFNode, SpikeFP32Adder
+from atomic_ops import ANDGate, SimpleLIFNode, SpikeFP32Adder, SpikeMode
 
 # 默认 IF 神经元 (理想数字逻辑)
 and_gate = ANDGate()
@@ -14,8 +15,21 @@ and_gate = ANDGate()
 lif_template = SimpleLIFNode(beta=0.9)
 and_gate_lif = ANDGate(neuron_template=lif_template)
 adder_lif = SpikeFP32Adder(neuron_template=lif_template)
+
+# SpikeMode 模式控制 (类似 torch.no_grad())
+with SpikeMode.temporal():
+    # 训练模式 - 保留膜电位残差
+    loss = model(input)
+    loss.backward()
+
+with SpikeMode.bit_exact():
+    # 推理模式 - 每次 forward 前清除膜电位
+    result = model(input)
 ```
 """
+# SpikeMode 模式控制器 (位精确模式 vs 时间动力学模式)
+from .spike_mode import SpikeMode
+
 # 转换工具函数
 from .converters import (
     float_to_fp8_bits, fp8_bits_to_float,
@@ -54,6 +68,7 @@ from .pulse_decoder import (
 
 # FP8 模块
 from .fp8_mul import SpikeFP8Multiplier
+from .fp8_mul_multi import SpikeFP8Multiplier_MultiPrecision
 from .fp8_adder_spatial import SpikeFP8Adder_Spatial
 from .fp8_linear_fast import SpikeFP8Linear_Fast
 from .fp8_linear_multi import SpikeFP8Linear_MultiPrecision
@@ -67,6 +82,7 @@ SpikeFP8Linear = SpikeFP8Linear_Fast  # 默认使用 Fast 版本
 from .fp16_adder import SpikeFP16Adder
 from .fp16_components import FP8ToFP16Converter, FP16ToFP8Converter
 from .fp16_mul_to_fp32 import FP16ToFP32Converter, SpikeFP16MulToFP32
+from .fp16_mul_multi import SpikeFP16Multiplier_MultiPrecision
 from .fp16_linear import SpikeFP16Linear_MultiPrecision
 
 # FP32 模块
@@ -104,3 +120,23 @@ from .fp64_exp import (
     SpikeFP32SoftmaxFullFP64
 )
 from .fp64_components import FP32ToFP64Converter, FP64ToFP32Converter
+from .fp64_sincos import SpikeFP64Sin, SpikeFP64Cos, SpikeFP64SinCos
+
+# FP32 三角函数
+from .fp32_sincos import SpikeFP32Sin, SpikeFP32Cos, SpikeFP32SinCos
+
+# 旋转位置编码 (RoPE)
+from .rope import (
+    SpikeRoPE_MultiPrecision,
+    SpikeFP32RoPE,
+    SpikeFP16RoPE,
+    SpikeFP8RoPE
+)
+
+# 多头注意力机制 (MultiHeadAttention)
+from .attention import (
+    SpikeMultiHeadAttention,
+    SpikeFP8MultiHeadAttention,
+    SpikeFP16MultiHeadAttention,
+    SpikeFP32MultiHeadAttention,
+)

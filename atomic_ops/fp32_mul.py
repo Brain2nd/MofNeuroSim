@@ -67,28 +67,27 @@ class ArrayMultiplier24x24(nn.Module):
         super().__init__()
         nt = neuron_template
 
-        # 部分积生成: 24个独立AND门实例 (每个部分积一个)
-        self.vec_ands = nn.ModuleList([VecAND(neuron_template=nt) for _ in range(24)])
+        # 部分积生成: 单实例 VecAND（动态扩展支持）
+        self.vec_ands = VecAND(neuron_template=nt)
 
-        # 累加器: 23个独立48位加法器实例 (禁止循环内复用)
-        self.vec_adders = nn.ModuleList([VecAdder(48, neuron_template=nt) for _ in range(23)])
+        # 累加器: 单实例 48 位加法器（动态扩展支持）
+        self.vec_adder = VecAdder(48, neuron_template=nt)
 
     def forward(self, A, B):
         """
         A, B: [..., 24] LSB first
         Returns: [..., 48] LSB first
         """
-        self.reset_all()
         device = A.device
         batch_shape = A.shape[:-1]
         zeros_24 = torch.zeros(batch_shape + (24,), device=device)
 
-        # 生成所有部分积 (使用独立实例)
+        # 生成所有部分积（单实例，动态扩展支持）
         partial_products = []
         for i in range(24):
             # 第i个部分积: A & B[i] (广播)
             b_i = B[..., i:i+1].expand(*batch_shape, 24)  # [..., 24]
-            pp = self.vec_ands[i](A, b_i)  # [..., 24]
+            pp = self.vec_ands(A, b_i)  # [..., 24]
 
             # 扩展到48位，低位补零（移位）
             if i > 0:
@@ -98,10 +97,10 @@ class ArrayMultiplier24x24(nn.Module):
                 pp_48 = torch.cat([pp, zeros_24], dim=-1)
             partial_products.append(pp_48)
 
-        # 累加所有部分积 (使用独立加法器实例)
+        # 累加所有部分积（单实例加法器，动态扩展支持）
         result = partial_products[0]
         for i in range(1, 24):
-            result, _ = self.vec_adders[i-1](result, partial_products[i])
+            result, _ = self.vec_adder(result, partial_products[i])
 
         return result
 
@@ -133,11 +132,11 @@ class LeadingZeroDetector48(nn.Module):
     def __init__(self, neuron_template=None):
         super().__init__()
         nt = neuron_template
-        # 48个独立门电路实例 (禁止循环内复用)
-        self.vec_not_found = nn.ModuleList([VecNOT(neuron_template=nt) for _ in range(48)])
-        self.vec_and_first = nn.ModuleList([VecAND(neuron_template=nt) for _ in range(48)])
-        self.vec_mux_lzc = nn.ModuleList([VecMUX(neuron_template=nt) for _ in range(48)])
-        self.vec_or_found = nn.ModuleList([VecOR(neuron_template=nt) for _ in range(48)])
+        # 单实例门电路 (动态扩展机制支持复用)
+        self.vec_not_found = VecNOT(neuron_template=nt)
+        self.vec_and_first = VecAND(neuron_template=nt)
+        self.vec_mux_lzc = VecMUX(neuron_template=nt)
+        self.vec_or_found = VecOR(neuron_template=nt)
         # 全零检测
         self.vec_or_tree = VecORTree(neuron_template=nt)
         self.vec_not_allzero = VecNOT(neuron_template=nt)
@@ -145,7 +144,6 @@ class LeadingZeroDetector48(nn.Module):
 
     def forward(self, X):
         """X: [..., 48] MSB first, returns: [..., 6] LZC MSB first"""
-        self.reset_all()
         device = X.device
         batch_shape = X.shape[:-1]
         zeros = torch.zeros(batch_shape + (1,), device=device)
@@ -160,10 +158,10 @@ class LeadingZeroDetector48(nn.Module):
             bit = X[..., i:i+1]
 
             # not_found = NOT(found)
-            not_found = self.vec_not_found[i](found)
+            not_found = self.vec_not_found(found)
 
             # is_first = bit AND not_found
-            is_first = self.vec_and_first[i](bit, not_found)
+            is_first = self.vec_and_first(bit, not_found)
 
             # 如果is_first=1，设置lzc为当前位置i的二进制表示
             # i的6位二进制 (扩展到batch)
@@ -175,10 +173,10 @@ class LeadingZeroDetector48(nn.Module):
 
             # lzc = MUX(is_first, pos_bits, lzc)
             is_first_exp = is_first.expand(*batch_shape, 6)
-            lzc = self.vec_mux_lzc[i](is_first_exp, pos_bits, lzc)
+            lzc = self.vec_mux_lzc(is_first_exp, pos_bits, lzc)
 
             # found = found OR is_first
-            found = self.vec_or_found[i](found, is_first)
+            found = self.vec_or_found(found, is_first)
 
         # 检测是否全零 (使用向量化 OR 树)
         any_one = self.vec_or_tree(X)
@@ -214,11 +212,11 @@ class BarrelShifterRight48(nn.Module):
         self.shift_bits = 6  # 最多移63位
         nt = neuron_template
 
-        # 6层独立门电路实例 (禁止循环内复用)
-        self.sticky_or_tree = nn.ModuleList([VecORTree(neuron_template=nt) for _ in range(self.shift_bits)])
-        self.sticky_mux = nn.ModuleList([VecMUX(neuron_template=nt) for _ in range(self.shift_bits)])
-        self.sticky_accum_or = nn.ModuleList([VecOR(neuron_template=nt) for _ in range(self.shift_bits)])
-        self.shift_mux = nn.ModuleList([VecMUX(neuron_template=nt) for _ in range(self.shift_bits)])
+        # 单实例门电路 (动态扩展机制支持复用)
+        self.sticky_or_tree = VecORTree(neuron_template=nt)
+        self.sticky_mux = VecMUX(neuron_template=nt)
+        self.sticky_accum_or = VecOR(neuron_template=nt)
+        self.shift_mux = VecMUX(neuron_template=nt)
 
     def forward(self, X, shift):
         """
@@ -226,7 +224,6 @@ class BarrelShifterRight48(nn.Module):
         shift: [..., 6] MSB first
         Returns: (shifted_data, sticky_bit)
         """
-        self.reset_all()
         device = X.device
         batch_shape = X.shape[:-1]
         zeros = torch.zeros_like(X[..., 0:1])
@@ -242,19 +239,19 @@ class BarrelShifterRight48(nn.Module):
             if shift_amt <= self.data_bits:
                 start_idx = self.data_bits - shift_amt
                 shifted_out_bits = current[..., start_idx:]
-                layer_sticky = self.sticky_or_tree[layer](shifted_out_bits)
+                layer_sticky = self.sticky_or_tree(shifted_out_bits)
             else:
                 layer_sticky = zeros
 
             # 只有当s_bit=1时才累积sticky
-            sticky_contrib = self.sticky_mux[layer](s_bit, layer_sticky, zeros)
-            sticky_accum = self.sticky_accum_or[layer](sticky_accum, sticky_contrib)
+            sticky_contrib = self.sticky_mux(s_bit, layer_sticky, zeros)
+            sticky_accum = self.sticky_accum_or(sticky_accum, sticky_contrib)
 
             # 右移操作 (向量化)
             zeros_pad = torch.zeros(batch_shape + (shift_amt,), device=device)
             shifted = torch.cat([zeros_pad, current[..., :-shift_amt]], dim=-1)
             s_bit_exp = s_bit.expand(*batch_shape, self.data_bits)
-            current = self.shift_mux[layer](s_bit_exp, shifted, current)
+            current = self.shift_mux(s_bit_exp, shifted, current)
 
         return current, sticky_accum
 
@@ -280,12 +277,11 @@ class BarrelShifterLeft48(nn.Module):
         self.shift_bits = 6  # 最多移63位
         nt = neuron_template
 
-        # 6层独立门电路实例 (禁止循环内复用)
-        self.shift_mux = nn.ModuleList([VecMUX(neuron_template=nt) for _ in range(self.shift_bits)])
+        # 单实例门电路 (动态扩展机制支持复用)
+        self.shift_mux = VecMUX(neuron_template=nt)
 
     def forward(self, X, shift):
         """X: [..., 48], shift: [..., 6] (MSB first)"""
-        self.reset_all()
         device = X.device
         batch_shape = X.shape[:-1]
 
@@ -298,7 +294,7 @@ class BarrelShifterLeft48(nn.Module):
             zeros_pad = torch.zeros(batch_shape + (shift_amt,), device=device)
             shifted = torch.cat([current[..., shift_amt:], zeros_pad], dim=-1)
             s_bit_exp = s_bit.expand(*batch_shape, self.data_bits)
-            current = self.shift_mux[layer](s_bit_exp, shifted, current)
+            current = self.shift_mux(s_bit_exp, shifted, current)
 
         return current
 
@@ -428,24 +424,24 @@ class SpikeFP32Multiplier(nn.Module):
         self.rne_and = ANDGate(neuron_template=nt)
         self.round_adder = RippleCarryAdder(bits=24, neuron_template=nt)
         
-        # ===== Sticky bit OR树 =====
-        self.sticky_or = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(22)])
-        
-        # ===== 特殊值检测 =====
-        # 指数全1检测 (Inf/NaN) - A和B分开的独立实例
-        self.exp_all_one_and_a = nn.ModuleList([ANDGate(neuron_template=nt) for _ in range(7)])
-        self.exp_all_one_and_b = nn.ModuleList([ANDGate(neuron_template=nt) for _ in range(7)])
+        # ===== Sticky bit OR（单实例）=====
+        self.sticky_or = ORGate(neuron_template=nt)
+
+        # ===== 特殊值检测（单实例）=====
+        # 指数全1检测 (Inf/NaN)
+        self.exp_all_one_and_a = ANDGate(neuron_template=nt)
+        self.exp_all_one_and_b = ANDGate(neuron_template=nt)
 
         # 指数全0检测 (Zero/Subnormal)
-        self.exp_zero_or_a = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(7)])
+        self.exp_zero_or_a = ORGate(neuron_template=nt)
         self.exp_zero_not_a = NOTGate(neuron_template=nt)
-        self.exp_zero_or_b = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(7)])
+        self.exp_zero_or_b = ORGate(neuron_template=nt)
         self.exp_zero_not_b = NOTGate(neuron_template=nt)
 
         # 尾数全0检测
-        self.mant_zero_or_a = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(22)])
+        self.mant_zero_or_a = ORGate(neuron_template=nt)
         self.mant_zero_not_a = NOTGate(neuron_template=nt)
-        self.mant_zero_or_b = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(22)])
+        self.mant_zero_or_b = ORGate(neuron_template=nt)
         self.mant_zero_not_b = NOTGate(neuron_template=nt)
         
         # ===== 零检测 =====
@@ -477,10 +473,10 @@ class SpikeFP32Multiplier(nn.Module):
         self.mux_a_leading = MUXGate(neuron_template=nt)
         self.mux_b_leading = MUXGate(neuron_template=nt)
         
-        # ===== 指数修正 (subnormal有效指数=1) =====
-        self.mux_a_exp = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(8)])
-        self.mux_b_exp = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(8)])
-        
+        # ===== 指数修正 (subnormal有效指数=1)（单实例）=====
+        self.mux_a_exp = MUXGate(neuron_template=nt)
+        self.mux_b_exp = MUXGate(neuron_template=nt)
+
         # ===== 溢出/下溢处理 =====
         # 溢出检测: exp >= 255 (使用10位计算)
         # 需要检测9位指数的第9位(溢出位)和低8位>=255
@@ -488,12 +484,12 @@ class SpikeFP32Multiplier(nn.Module):
         self.overflow_and_1 = ANDGate(neuron_template=nt)  # is_overflow
         self.overflow_and_2 = ANDGate(neuron_template=nt)  # overflow_and_valid
         self.overflow_and_3 = ANDGate(neuron_template=nt)  # underflow_only
-        self.overflow_255_check = nn.ModuleList([ANDGate(neuron_template=nt) for _ in range(8)])  # 检测低8位>=255
+        self.overflow_255_check = ANDGate(neuron_template=nt)  # 检测低8位>=255
 
         # 下溢检测: exp <= 0 (9位有符号)
         # bit8=1表示负数(下溢)，或低9位全0
-        self.underflow_not = nn.ModuleList([NOTGate(neuron_template=nt) for _ in range(9)])
-        self.underflow_and = nn.ModuleList([ANDGate(neuron_template=nt) for _ in range(8)])  # exp_is_zero计算
+        self.underflow_not = NOTGate(neuron_template=nt)
+        self.underflow_and = ANDGate(neuron_template=nt)  # exp_is_zero计算
         # 独立实例 (禁止循环内复用)
         self.underflow_or_1 = ORGate(neuron_template=nt)  # low9_ge_255
         self.underflow_or_2 = ORGate(neuron_template=nt)  # is_underflow_or_subnormal
@@ -501,63 +497,63 @@ class SpikeFP32Multiplier(nn.Module):
         self.subnorm_valid_gate = ANDGate(neuron_template=nt)  # subnorm_and_valid计算
         self.underflow_final_gate = ANDGate(neuron_template=nt)  # underflow_final计算
         
-        # 溢出结果选择MUX
-        self.overflow_mux_e = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(8)])
-        self.overflow_mux_m = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(23)])
+        # 溢出结果选择MUX（单实例）
+        self.overflow_mux_e = MUXGate(neuron_template=nt)
+        self.overflow_mux_m = MUXGate(neuron_template=nt)
         self.not_overflow = NOTGate(neuron_template=nt)
-        
-        # 下溢结果选择MUX
-        self.underflow_mux_e = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(8)])
-        self.underflow_mux_m = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(23)])
+
+        # 下溢结果选择MUX（单实例）
+        self.underflow_mux_e = MUXGate(neuron_template=nt)
+        self.underflow_mux_m = MUXGate(neuron_template=nt)
         self.not_underflow = NOTGate(neuron_template=nt)
         self.not_either_zero_gate = NOTGate(neuron_template=nt)  # 独立实例
-        
+
         # ===== Subnormal处理 =====
         # subnormal检测: exp <= 0 但 exp > -150 (大约)
         # 需要额外右移 (1 - exp) 位
         self.subnormal_shifter = BarrelShifterRight48(neuron_template=nt)  # 对尾数进行额外右移
-        
+
         # 移位量计算: shift = 1 - exp = 1 + (-exp)
         # 需要将10位负指数转换为正的移位量
-        self.shift_not = nn.ModuleList([NOTGate(neuron_template=nt) for _ in range(10)])  # 取反
+        self.shift_not = NOTGate(neuron_template=nt)  # 取反（单实例）
         # 2个独立实例
         self.shift_add_one_1 = RippleCarryAdder10Bit(neuron_template=nt)  # -exp = ~exp + 1
         self.shift_add_one_2 = RippleCarryAdder10Bit(neuron_template=nt)  # shift = neg_exp + 1
         self.shift_add_one_const = RippleCarryAdder(bits=6, neuron_template=nt)  # 加1得到移位量
-        
-        # subnormal舍入
-        self.subnorm_sticky_or = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(24)])  # 合并sticky
-        self.shift_bit_check_or = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(4)])  # shift_bit5_or_higher
+
+        # subnormal舍入（单实例）
+        self.subnorm_sticky_or = ORGate(neuron_template=nt)  # 合并sticky
+        self.shift_bit_check_or = ORGate(neuron_template=nt)  # shift_bit5_or_higher
         self.subnorm_rne_or = ORGate(neuron_template=nt)
         self.subnorm_rne_and = ANDGate(neuron_template=nt)
         self.subnorm_round_adder = RippleCarryAdder(bits=24, neuron_template=nt)
-        
-        # subnormal结果选择
-        self.subnorm_mux_m = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(23)])
+
+        # subnormal结果选择（单实例）
+        self.subnorm_mux_m = MUXGate(neuron_template=nt)
         # 2个独立实例
         self.is_subnormal_and_1 = ANDGate(neuron_template=nt)  # is_subnormal
         self.is_subnormal_and_2 = ANDGate(neuron_template=nt)  # subnorm_temp
         self.not_very_underflow = NOTGate(neuron_template=nt)  # 非完全下溢
         
-        # ===== 结果选择MUX =====
+        # ===== 结果选择MUX（单实例）=====
         # NaN输出
-        self.nan_mux_e = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(8)])
-        self.nan_mux_m = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(23)])
+        self.nan_mux_e = MUXGate(neuron_template=nt)
+        self.nan_mux_m = MUXGate(neuron_template=nt)
         # Inf输出
-        self.inf_mux_e = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(8)])
-        self.inf_mux_m = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(23)])
+        self.inf_mux_e = MUXGate(neuron_template=nt)
+        self.inf_mux_m = MUXGate(neuron_template=nt)
         # 零输出
-        self.zero_mux_e = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(8)])
-        self.zero_mux_m = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(23)])
-        
-        # ===== 舍入进位处理 =====
+        self.zero_mux_e = MUXGate(neuron_template=nt)
+        self.zero_mux_m = MUXGate(neuron_template=nt)
+
+        # ===== 舍入进位处理（单实例）=====
         self.round_carry_not = NOTGate(neuron_template=nt)
-        self.mant_clear_and = nn.ModuleList([ANDGate(neuron_template=nt) for _ in range(23)])
+        self.mant_clear_and = ANDGate(neuron_template=nt)
         self.exp_round_inc = RippleCarryAdder(bits=8, neuron_template=nt)
-        self.exp_round_mux = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(8)])
-        
-        # ===== 乘积溢出检测 (P[47]=1) =====
-        self.prod_overflow_mux_m = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(24)])
+        self.exp_round_mux = MUXGate(neuron_template=nt)
+
+        # ===== 乘积溢出检测 (P[47]=1)（单实例）=====
+        self.prod_overflow_mux_m = MUXGate(neuron_template=nt)
         
         # ===== 特殊值选择 (纯SNN NOT/AND门) =====
         self.not_result_is_nan = NOTGate(neuron_template=nt)
@@ -567,15 +563,14 @@ class SpikeFP32Multiplier(nn.Module):
         self.zero_only_gate = ANDGate(neuron_template=nt)
         # 独立实例 (禁止循环内复用)
         self.underflow_temp_gate = ANDGate(neuron_template=nt)  # underflow_temp计算
-        self.underflow_final_mux_e = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(8)])
-        self.underflow_final_mux_m = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(23)])
+        self.underflow_final_mux_e = MUXGate(neuron_template=nt)
+        self.underflow_final_mux_m = MUXGate(neuron_template=nt)
         
     def forward(self, A, B):
         """
         A, B: [..., 32] FP32脉冲 [S | E7..E0 | M22..M0] MSB first
         Returns: [..., 32] FP32脉冲
         """
-        self.reset()
         A, B = torch.broadcast_tensors(A, B)
         device = A.device
         batch_shape = A.shape[:-1]
@@ -594,36 +589,36 @@ class SpikeFP32Multiplier(nn.Module):
         # ===== 2. 符号 =====
         s_out = self.sign_xor(s_a, s_b)
         
-        # ===== 3. 特殊值检测 =====
-        # 指数全1检测 (Inf/NaN) - 使用独立的门电路实例
+        # ===== 3. 特殊值检测（单实例）=====
+        # 指数全1检测 (Inf/NaN)
         e_a_all_one = e_a[..., 0:1]
         for i in range(1, 8):
-            e_a_all_one = self.exp_all_one_and_a[i-1](e_a_all_one, e_a[..., i:i+1])
+            e_a_all_one = self.exp_all_one_and_a(e_a_all_one, e_a[..., i:i+1])
 
         e_b_all_one = e_b[..., 0:1]
         for i in range(1, 8):
-            e_b_all_one = self.exp_all_one_and_b[i-1](e_b_all_one, e_b[..., i:i+1])
-        
+            e_b_all_one = self.exp_all_one_and_b(e_b_all_one, e_b[..., i:i+1])
+
         # 指数全0检测 (Zero/Subnormal)
         e_a_any_one = e_a[..., 0:1]
         for i in range(1, 8):
-            e_a_any_one = self.exp_zero_or_a[i-1](e_a_any_one, e_a[..., i:i+1])
+            e_a_any_one = self.exp_zero_or_a(e_a_any_one, e_a[..., i:i+1])
         e_a_is_zero = self.exp_zero_not_a(e_a_any_one)
-        
+
         e_b_any_one = e_b[..., 0:1]
         for i in range(1, 8):
-            e_b_any_one = self.exp_zero_or_b[i-1](e_b_any_one, e_b[..., i:i+1])
+            e_b_any_one = self.exp_zero_or_b(e_b_any_one, e_b[..., i:i+1])
         e_b_is_zero = self.exp_zero_not_b(e_b_any_one)
-        
+
         # 尾数全0检测
         m_a_any_one = m_a[..., 0:1]
         for i in range(1, 23):
-            m_a_any_one = self.mant_zero_or_a[i-1](m_a_any_one, m_a[..., i:i+1])
+            m_a_any_one = self.mant_zero_or_a(m_a_any_one, m_a[..., i:i+1])
         m_a_is_zero = self.mant_zero_not_a(m_a_any_one)
-        
+
         m_b_any_one = m_b[..., 0:1]
         for i in range(1, 23):
-            m_b_any_one = self.mant_zero_or_b[i-1](m_b_any_one, m_b[..., i:i+1])
+            m_b_any_one = self.mant_zero_or_b(m_b_any_one, m_b[..., i:i+1])
         m_b_is_zero = self.mant_zero_not_b(m_b_any_one)
         
         # 零检测: E=0 AND M=0
@@ -660,18 +655,18 @@ class SpikeFP32Multiplier(nn.Module):
         e_a_corrected = []
         for i in range(8):
             if i == 0:
-                e_bit = self.mux_a_exp[i](a_is_subnormal, ones, e_a_le[..., i:i+1])
+                e_bit = self.mux_a_exp(a_is_subnormal, ones, e_a_le[..., i:i+1])
             else:
-                e_bit = self.mux_a_exp[i](a_is_subnormal, zeros, e_a_le[..., i:i+1])
+                e_bit = self.mux_a_exp(a_is_subnormal, zeros, e_a_le[..., i:i+1])
             e_a_corrected.append(e_bit)
         e_a_corrected = torch.cat(e_a_corrected, dim=-1)
-        
+
         e_b_corrected = []
         for i in range(8):
             if i == 0:
-                e_bit = self.mux_b_exp[i](b_is_subnormal, ones, e_b_le[..., i:i+1])
+                e_bit = self.mux_b_exp(b_is_subnormal, ones, e_b_le[..., i:i+1])
             else:
-                e_bit = self.mux_b_exp[i](b_is_subnormal, zeros, e_b_le[..., i:i+1])
+                e_bit = self.mux_b_exp(b_is_subnormal, zeros, e_b_le[..., i:i+1])
             e_b_corrected.append(e_bit)
         e_b_corrected = torch.cat(e_b_corrected, dim=-1)
         
@@ -758,7 +753,7 @@ class SpikeFP32Multiplier(nn.Module):
         sticky = product_norm[..., 25:26]
         for i in range(26, 48):
             if i - 26 < 22:
-                sticky = self.sticky_or[i-26](sticky, product_norm[..., i:i+1])
+                sticky = self.sticky_or(sticky, product_norm[..., i:i+1])
         
         # RNE舍入
         lsb = mant_norm[..., 22:23]  # 最低位
@@ -778,7 +773,7 @@ class SpikeFP32Multiplier(nn.Module):
         not_carry = self.round_carry_not(mant_carry)
         mant_final_le = []
         for i in range(23):
-            m_bit = self.mant_clear_and[i](not_carry, mant_rounded[..., i:i+1])
+            m_bit = self.mant_clear_and(not_carry, mant_rounded[..., i:i+1])
             mant_final_le.append(m_bit)
         mant_final_le = torch.cat(mant_final_le, dim=-1)
         mant_final = mant_final_le.flip(-1)  # 转MSB first
@@ -792,7 +787,7 @@ class SpikeFP32Multiplier(nn.Module):
         # 选择最终指数 (LSB first)
         exp_final_le = []
         for i in range(8):
-            e_sel = self.exp_round_mux[i](mant_carry, exp_after_round_le[..., i:i+1], exp_8_le[..., i:i+1])
+            e_sel = self.exp_round_mux(mant_carry, exp_after_round_le[..., i:i+1], exp_8_le[..., i:i+1])
             exp_final_le.append(e_sel)
         exp_final_le = torch.cat(exp_final_le, dim=-1)
         exp_final = exp_final_le.flip(-1)  # 转 MSB first 用于输出
@@ -816,30 +811,30 @@ class SpikeFP32Multiplier(nn.Module):
         exp_bit8 = exp_final_pre[..., 8:9]
         exp_all_255 = exp_final_pre[..., 0:1]
         for i in range(1, 8):
-            exp_all_255 = self.overflow_255_check[i-1](exp_all_255, exp_final_pre[..., i:i+1])
+            exp_all_255 = self.overflow_255_check(exp_all_255, exp_final_pre[..., i:i+1])
         
         # low9 >= 255: bit8=1 或 低8位全1
         low9_ge_255 = self.underflow_or_1(exp_bit8, exp_all_255)
 
         # 溢出条件: bit9=0 且 low9>=255
-        not_bit9 = self.underflow_not[0](exp_bit9)
+        not_bit9 = self.underflow_not(exp_bit9)
         is_overflow = self.overflow_and_1(not_bit9, low9_ge_255)
         
         # 下溢: 10位有符号值 <= 0
         # bit9=1 (负数) 或 全10位=0
-        
+
         # 检测10位全0
         not_bits = []
         for i in range(10):
             if i < 9:
-                not_bits.append(self.underflow_not[i](exp_final_pre[..., i:i+1]))
+                not_bits.append(self.underflow_not(exp_final_pre[..., i:i+1]))
             else:
                 not_bits.append(not_bit9)
-        
-        exp_is_zero = self.underflow_and[0](not_bits[0], not_bits[1])
+
+        exp_is_zero = self.underflow_and(not_bits[0], not_bits[1])
         for i in range(2, 9):
-            exp_is_zero = self.underflow_and[i-1](exp_is_zero, not_bits[i])
-        exp_is_zero = self.overflow_255_check[7](exp_is_zero, not_bits[9])
+            exp_is_zero = self.underflow_and(exp_is_zero, not_bits[i])
+        exp_is_zero = self.overflow_255_check(exp_is_zero, not_bits[9])
         
         # 下溢条件: bit9=1 (负数) 或 全零
         is_underflow_or_subnormal = self.underflow_or_2(exp_bit9, exp_is_zero)
@@ -871,7 +866,7 @@ class SpikeFP32Multiplier(nn.Module):
         # 计算 -exp (取反+1)
         exp_neg = []
         for i in range(10):
-            exp_neg.append(self.shift_not[i](exp_final_pre[..., i:i+1]))
+            exp_neg.append(self.shift_not(exp_final_pre[..., i:i+1]))
         exp_neg = torch.cat(exp_neg, dim=-1)
         
         one_10 = torch.cat([ones, zeros, zeros, zeros, zeros, zeros, zeros, zeros, zeros, zeros], dim=-1)
@@ -888,7 +883,7 @@ class SpikeFP32Multiplier(nn.Module):
         # 如果bit5-9中任意一位为1，则移位量>=32，完全下溢
         shift_bit5_or_higher = shift_full_10[..., 5:6]
         for i in range(6, 10):
-            shift_bit5_or_higher = self.shift_bit_check_or[i-6](shift_bit5_or_higher, shift_full_10[..., i:i+1])
+            shift_bit5_or_higher = self.shift_bit_check_or(shift_bit5_or_higher, shift_full_10[..., i:i+1])
         
         # 提取低6位作为移位量
         shift_final = shift_full_10[..., :6]  # LSB first
@@ -914,8 +909,8 @@ class SpikeFP32Multiplier(nn.Module):
         subnorm_sticky = shifted_product[..., 25:26]
         for i in range(26, 48):
             if i - 26 < 22:
-                subnorm_sticky = self.subnorm_sticky_or[i-26](subnorm_sticky, shifted_product[..., i:i+1])
-        subnorm_sticky = self.subnorm_sticky_or[22](subnorm_sticky, shift_sticky)
+                subnorm_sticky = self.subnorm_sticky_or(subnorm_sticky, shifted_product[..., i:i+1])
+        subnorm_sticky = self.subnorm_sticky_or(subnorm_sticky, shift_sticky)
         
         # RNE舍入
         subnorm_lsb = subnorm_mant[..., 22:23]  # 尾数最低位
@@ -960,10 +955,10 @@ class SpikeFP32Multiplier(nn.Module):
         e_out = []
         m_out = []
         for i in range(8):
-            e_bit = self.nan_mux_e[i](result_is_nan, nan_exp[..., i:i+1], exp_final[..., i:i+1])
+            e_bit = self.nan_mux_e(result_is_nan, nan_exp[..., i:i+1], exp_final[..., i:i+1])
             e_out.append(e_bit)
         for i in range(23):
-            m_bit = self.nan_mux_m[i](result_is_nan, nan_mant[..., i:i+1], mant_final[..., i:i+1])
+            m_bit = self.nan_mux_m(result_is_nan, nan_mant[..., i:i+1], mant_final[..., i:i+1])
             m_out.append(m_bit)
         
         e_out = torch.cat(e_out, dim=-1)
@@ -975,10 +970,10 @@ class SpikeFP32Multiplier(nn.Module):
         e_out2 = []
         m_out2 = []
         for i in range(8):
-            e_bit = self.inf_mux_e[i](inf_and_not_nan, inf_exp[..., i:i+1], e_out[..., i:i+1])
+            e_bit = self.inf_mux_e(inf_and_not_nan, inf_exp[..., i:i+1], e_out[..., i:i+1])
             e_out2.append(e_bit)
         for i in range(23):
-            m_bit = self.inf_mux_m[i](inf_and_not_nan, inf_mant[..., i:i+1], m_out[..., i:i+1])
+            m_bit = self.inf_mux_m(inf_and_not_nan, inf_mant[..., i:i+1], m_out[..., i:i+1])
             m_out2.append(m_bit)
         
         e_out = torch.cat(e_out2, dim=-1)
@@ -991,10 +986,10 @@ class SpikeFP32Multiplier(nn.Module):
         e_out3 = []
         m_out3 = []
         for i in range(8):
-            e_bit = self.zero_mux_e[i](zero_only, zero_exp[..., i:i+1], e_out[..., i:i+1])
+            e_bit = self.zero_mux_e(zero_only, zero_exp[..., i:i+1], e_out[..., i:i+1])
             e_out3.append(e_bit)
         for i in range(23):
-            m_bit = self.zero_mux_m[i](zero_only, zero_mant[..., i:i+1], m_out[..., i:i+1])
+            m_bit = self.zero_mux_m(zero_only, zero_mant[..., i:i+1], m_out[..., i:i+1])
             m_out3.append(m_bit)
         
         e_out = torch.cat(e_out3, dim=-1)
@@ -1008,10 +1003,10 @@ class SpikeFP32Multiplier(nn.Module):
         e_out4 = []
         m_out4 = []
         for i in range(8):
-            e_bit = self.overflow_mux_e[i](overflow_and_valid, inf_exp[..., i:i+1], e_out[..., i:i+1])
+            e_bit = self.overflow_mux_e(overflow_and_valid, inf_exp[..., i:i+1], e_out[..., i:i+1])
             e_out4.append(e_bit)
         for i in range(23):
-            m_bit = self.overflow_mux_m[i](overflow_and_valid, inf_mant[..., i:i+1], m_out[..., i:i+1])
+            m_bit = self.overflow_mux_m(overflow_and_valid, inf_mant[..., i:i+1], m_out[..., i:i+1])
             m_out4.append(m_bit)
         
         e_out = torch.cat(e_out4, dim=-1)
@@ -1023,14 +1018,14 @@ class SpikeFP32Multiplier(nn.Module):
         not_either_zero = self.not_either_zero_gate(either_zero)
         subnorm_temp = self.is_subnormal_and_2(is_subnormal, not_nan)
         subnorm_and_valid = self.subnorm_valid_gate(subnorm_temp, not_either_zero)
-        
+
         e_out5 = []
         m_out5 = []
         for i in range(8):
-            e_bit = self.underflow_mux_e[i](subnorm_and_valid, zero_exp[..., i:i+1], e_out[..., i:i+1])
+            e_bit = self.underflow_mux_e(subnorm_and_valid, zero_exp[..., i:i+1], e_out[..., i:i+1])
             e_out5.append(e_bit)
         for i in range(23):
-            m_bit = self.subnorm_mux_m[i](subnorm_and_valid, subnorm_mant_final[..., i:i+1], m_out[..., i:i+1])
+            m_bit = self.subnorm_mux_m(subnorm_and_valid, subnorm_mant_final[..., i:i+1], m_out[..., i:i+1])
             m_out5.append(m_bit)
         
         e_out = torch.cat(e_out5, dim=-1)
@@ -1043,10 +1038,10 @@ class SpikeFP32Multiplier(nn.Module):
         e_out6 = []
         m_out6 = []
         for i in range(8):
-            e_bit = self.underflow_final_mux_e[i](underflow_final, zero_exp[..., i:i+1], e_out[..., i:i+1])  # 独立实例
+            e_bit = self.underflow_final_mux_e(underflow_final, zero_exp[..., i:i+1], e_out[..., i:i+1])
             e_out6.append(e_bit)
         for i in range(23):
-            m_bit = self.underflow_final_mux_m[i](underflow_final, zero_mant[..., i:i+1], m_out[..., i:i+1])  # 独立实例
+            m_bit = self.underflow_final_mux_m(underflow_final, zero_mant[..., i:i+1], m_out[..., i:i+1])
             m_out6.append(m_bit)
         
         e_out = torch.cat(e_out6, dim=-1)

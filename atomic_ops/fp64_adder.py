@@ -43,9 +43,29 @@ class SpikeFP64Adder(nn.Module):
         self.vec_or = VecOR(neuron_template=nt)
         self.vec_xor = VecXOR(neuron_template=nt)
         self.vec_not = VecNOT(neuron_template=nt)
+
+        # ===== VecMUX 统一实例 (动态扩展机制支持不同位宽) =====
         self.vec_mux = VecMUX(neuron_template=nt)
-        self.vec_or_tree = VecORTree(neuron_template=nt)
-        self.vec_and_tree = VecANDTree(neuron_template=nt)
+
+        # ===== 独立实例的 Tree (不同输入大小需要独立实例) =====
+        # 指数非零检测 (11-bit): e_a_nonzero, e_b_nonzero
+        self.vec_or_tree_exp_a = VecORTree(neuron_template=nt)
+        self.vec_or_tree_exp_b = VecORTree(neuron_template=nt)
+
+        # 大指数差检测 (5-bit)
+        self.vec_or_tree_high_bits = VecORTree(neuron_template=nt)
+
+        # bit543检测 (3-bit)
+        self.vec_and_tree_bit543 = VecANDTree(neuron_template=nt)
+
+        # sticky检测 - 溢出情况 (4-bit)
+        self.vec_or_tree_sticky_overflow = VecORTree(neuron_template=nt)
+
+        # sticky检测 - 正常情况 (3-bit)
+        self.vec_or_tree_sticky_norm = VecORTree(neuron_template=nt)
+
+        # 最终指数全1检测 (11-bit)
+        self.vec_and_tree_exp_all_one = VecANDTree(neuron_template=nt)
         
         # ===== 比较器 =====
         self.exp_cmp = Comparator11Bit(neuron_template=nt)
@@ -89,7 +109,6 @@ class SpikeFP64Adder(nn.Module):
         Returns:
             [..., 64] FP64 脉冲
         """
-        self.reset()
         device = A.device
         batch_shape = A.shape[:-1]
         zeros = torch.zeros(batch_shape + (1,), device=device)
@@ -105,14 +124,14 @@ class SpikeFP64Adder(nn.Module):
         m_b_raw = B[..., 12:64]
         
         # ===== E=0 检测与隐藏位 =====
-        e_a_nonzero = self.vec_or_tree(e_a)
+        e_a_nonzero = self.vec_or_tree_exp_a(e_a)
         e_a_is_zero = self.vec_not(e_a_nonzero)
         hidden_a = e_a_nonzero
-        
-        e_b_nonzero = self.vec_or_tree(e_b)
+
+        e_b_nonzero = self.vec_or_tree_exp_b(e_b)
         e_b_is_zero = self.vec_not(e_b_nonzero)
         hidden_b = e_b_nonzero
-        
+
         # 有效指数 (subnormal时E=1)
         # 创建常量 E=1 (00000000001)
         e_one = torch.cat([zeros]*10 + [ones], dim=-1)
@@ -144,20 +163,20 @@ class SpikeFP64Adder(nn.Module):
         
         # 选择指数差 (向量化MUX一次处理所有位)
         exp_diff = self.vec_mux(a_ge_b.expand_as(diff_ab), diff_ab, diff_ba)
-        
+
         # ===== 检测大指数差 (exp_diff >= 57) =====
         high_bits = exp_diff[..., 0:5]  # bit10-6
-        high_bits_any = self.vec_or_tree(high_bits)
+        high_bits_any = self.vec_or_tree_high_bits(high_bits)
         bit543 = exp_diff[..., 5:8]  # bit5,4,3
-        bit543_all = self.vec_and_tree(bit543)
+        bit543_all = self.vec_and_tree_bit543(bit543)
         is_big_diff = self.vec_or(high_bits_any, bit543_all)
-        
+
         # 取低6位作为移位量
         shift_amt = exp_diff[..., 5:11]  # 最多移63位
-        
+
         # e_max (向量化MUX)
         e_max = self.vec_mux(a_ge_b.expand_as(e_a_eff), e_a_eff, e_b_eff)
-        
+
         # ===== Step 3: 尾数对齐 (向量化) =====
         m_large = self.vec_mux(a_ge_b.expand_as(m_a), m_a, m_b)
         m_small_unshifted = self.vec_mux(a_ge_b.expand_as(m_a), m_b, m_a)
@@ -184,10 +203,10 @@ class SpikeFP64Adder(nn.Module):
         one_57bit = torch.cat([ones] + [zeros]*56, dim=-1)  # 1 in LSB-first
         diff_minus_one_lsb, _ = self.sub_one(diff_result_lsb, one_57bit)
         diff_minus_one = diff_minus_one_lsb.flip(-1)
-        
+
         # 选择差结果 (向量化MUX)
         diff_final = self.vec_mux(need_sub_one.expand_as(diff_result), diff_minus_one, diff_result)
-        
+
         # 选择加减结果
         mantissa_result = self.vec_mux(is_diff_sign.expand_as(diff_final), diff_final, sum_result)
         result_carry = self.vec_mux(is_diff_sign, zeros, sum_carry)
@@ -220,13 +239,13 @@ class SpikeFP64Adder(nn.Module):
         m_overflow = mantissa_result[..., 0:52]
         round_overflow = mantissa_result[..., 52:53]
         sticky_overflow_bits = mantissa_result[..., 53:57]
-        sticky_overflow = self.vec_or_tree(sticky_overflow_bits)
-        
+        sticky_overflow = self.vec_or_tree_sticky_overflow(sticky_overflow_bits)
+
         # 正常归一化情况: 取位1-52
         m_norm = norm_mantissa[..., 1:53]
         round_norm = norm_mantissa[..., 53:54]
         sticky_norm_bits = norm_mantissa[..., 54:57]
-        sticky_norm = self.vec_or_tree(sticky_norm_bits)
+        sticky_norm = self.vec_or_tree_sticky_norm(sticky_norm_bits)
         
         # 下溢情况
         m_subnorm = mantissa_result[..., 0:52]
@@ -235,22 +254,22 @@ class SpikeFP64Adder(nn.Module):
         m_pre = self.vec_mux(result_carry.expand_as(m_overflow), m_overflow, m_norm)
         round_pre = self.vec_mux(result_carry, round_overflow, round_norm)
         sticky_pre_raw = self.vec_mux(result_carry, sticky_overflow, sticky_norm)
-        
+
         # 合并shift_sticky
         not_diff = self.vec_not(is_diff_sign)
         add_shift_sticky = self.vec_and(not_diff, shift_sticky)
         sticky_pre = self.vec_or(sticky_pre_raw, add_shift_sticky)
-        
+
         # 下溢选择
         m_selected = self.vec_mux(is_underflow.expand_as(m_subnorm), m_subnorm, m_pre)
-        
+
         # RNE舍入
         L = m_selected[..., 51:52]
         R = round_pre
         S = sticky_pre
         sticky_or_L = self.vec_or(S, L)
         do_round = self.vec_and(R, sticky_or_L)
-        
+
         # 下溢时不舍入
         not_underflow = self.vec_not(is_underflow)
         do_round = self.vec_and(do_round, not_underflow)
@@ -265,37 +284,37 @@ class SpikeFP64Adder(nn.Module):
         # 舍入溢出处理 (向量化)
         not_round_c = self.vec_not(round_carry)
         m_final = self.vec_and(not_round_c.expand_as(m_rounded), m_rounded)
-        
+
         # 指数调整
         exp_round_inc = torch.cat([zeros]*10 + [round_carry], dim=-1)
         e_rounded_lsb, _ = self.round_exp_inc(final_e_pre.flip(-1), exp_round_inc.flip(-1))
         e_rounded = e_rounded_lsb.flip(-1)
-        
+
         computed_e = self.vec_mux(round_carry.expand_as(e_rounded), e_rounded, final_e_pre)
-        
+
         # ===== Step 8: 符号 =====
         computed_s = s_large
-        
+
         # ===== 完全抵消 =====
         zero_52bit = torch.cat([zeros]*52, dim=-1)
         cancel_s = self.vec_mux(exact_cancel, zeros, computed_s)
         cancel_e = self.vec_mux(exact_cancel.expand_as(computed_e), zero_11bit, computed_e)
         cancel_m = self.vec_mux(exact_cancel.expand_as(m_final), zero_52bit, m_final)
-        
+
         # ===== Inf/NaN处理 =====
-        computed_e_all_one = self.vec_and_tree(computed_e)
-        
+        computed_e_all_one = self.vec_and_tree_exp_all_one(computed_e)
+
         one_11bit_val = torch.cat([ones]*11, dim=-1)
         final_s = self.vec_mux(computed_e_all_one, computed_s, cancel_s)
         final_e = self.vec_mux(computed_e_all_one.expand_as(cancel_e), one_11bit_val, cancel_e)
         final_m = self.vec_mux(computed_e_all_one.expand_as(cancel_m), zero_52bit, cancel_m)
-        
+
         # ===== 大指数差处理: 直接返回较大的数 =====
         larger_input = self.vec_mux(a_ge_b.expand_as(A), A, B)
-        
+
         # 组装正常结果
         normal_result = torch.cat([final_s, final_e, final_m], dim=-1)
-        
+
         # 根据is_big_diff选择最终结果
         result = self.vec_mux(is_big_diff.expand_as(normal_result), larger_input, normal_result)
         
@@ -306,9 +325,16 @@ class SpikeFP64Adder(nn.Module):
         self.vec_or.reset()
         self.vec_xor.reset()
         self.vec_not.reset()
+        # VecMUX 统一实例
         self.vec_mux.reset()
-        self.vec_or_tree.reset()
-        self.vec_and_tree.reset()
+        # Tree instances
+        self.vec_or_tree_exp_a.reset()
+        self.vec_or_tree_exp_b.reset()
+        self.vec_or_tree_high_bits.reset()
+        self.vec_and_tree_bit543.reset()
+        self.vec_or_tree_sticky_overflow.reset()
+        self.vec_or_tree_sticky_norm.reset()
+        self.vec_and_tree_exp_all_one.reset()
         self.exp_cmp.reset()
         self.mantissa_cmp.reset()
         self.exp_sub_ab.reset()

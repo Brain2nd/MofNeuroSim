@@ -69,21 +69,21 @@ class SpikeFP64Floor(nn.Module):
     def __init__(self, neuron_template=None):
         super().__init__()
         nt = neuron_template
-        
-        # 指数减法器 (E - 1023)
-        self.exp_sub = nn.ModuleList([FullAdder(neuron_template=nt) for _ in range(11)])
-        self.exp_not = nn.ModuleList([NOTGate(neuron_template=nt) for _ in range(11)])
-        
+
+        # 指数减法器 (E - 1023) - 单实例
+        self.exp_sub = FullAdder(neuron_template=nt)
+        self.exp_not = NOTGate(neuron_template=nt)
+
         # E < 1023 检测
         self.lt_bias_not = NOTGate(neuron_template=nt)
-        
-        # E >= 1075 检测 (无小数)
-        self.ge_no_frac = nn.ModuleList([FullAdder(neuron_template=nt) for _ in range(11)])
-        
-        # 尾数清零 (52位)
-        self.mant_clear_cmp = nn.ModuleList([nn.ModuleList([FullAdder(neuron_template=nt) for _ in range(11)]) for _ in range(52)])
-        self.mant_clear_not = nn.ModuleList([NOTGate(neuron_template=nt) for _ in range(52)])
-        self.mant_mux = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(52)])
+
+        # E >= 1075 检测 (无小数) - 单实例
+        self.ge_no_frac = FullAdder(neuron_template=nt)
+
+        # 尾数清零 (52位) - 单实例
+        self.mant_clear_cmp = FullAdder(neuron_template=nt)
+        self.mant_clear_not = NOTGate(neuron_template=nt)
+        self.mant_mux = MUXGate(neuron_template=nt)
         
         # 向量化小数检测
         self.frac_and = VecAND(neuron_template=nt)
@@ -99,51 +99,45 @@ class SpikeFP64Floor(nn.Module):
         self.neg_mux = VecMUX(neuron_template=nt)
         
     def forward(self, x):
-        self.reset()
         device = x.device
         batch_shape = x.shape[:-1]
         zeros = torch.zeros(batch_shape + (1,), device=device)
         ones = torch.ones(batch_shape + (1,), device=device)
-        
+
         s_x = x[..., 0:1]
         e_x = x[..., 1:12]   # 11位指数
         m_x = x[..., 12:64]  # 52位尾数
         
         e_x_le = e_x.flip(-1)  # LSB first
-        
-        # 1. 计算 E - 1023
+
+        # 1. 计算 E - 1023 (向量化)
         # 1023 = 0b01111111111
         const_1023_le = torch.cat([ones]*10 + [zeros], dim=-1)  # LSB first
-        not_1023_le = []
-        for i in range(11):
-            not_1023_le.append(self.exp_not[i](const_1023_le[..., i:i+1]))
-        not_1023_le = torch.cat(not_1023_le, dim=-1)
-        
-        borrow = ones
+        not_1023_le = self.exp_not(const_1023_le)
+
+        # 向量化减法链 (sequential carry)
         shift_bits = []
+        borrow = ones
         for i in range(11):
-            s, c = self.exp_sub[i](e_x_le[..., i:i+1], not_1023_le[..., i:i+1], borrow)
+            s, c = self.exp_sub(e_x_le[..., i:i+1], not_1023_le[..., i:i+1], borrow)
             shift_bits.append(s)
             borrow = c
         shift = torch.cat(shift_bits, dim=-1)  # LSB first
-        
+
         # E < 1023: borrow_out=0 means E < 1023
         e_lt_1023 = self.lt_bias_not(borrow)
-        
+
         # 2. E >= 1075 检测 (52 + 1023 = 1075, 无小数)
         # 1075 = 0b10000110011
         const_1075_le = torch.cat([ones, ones, zeros, zeros, ones, ones, zeros, zeros, zeros, zeros, ones], dim=-1)
-        not_1075_le = []
-        for i in range(11):
-            not_1075_le.append(self.exp_not[i](const_1075_le[..., i:i+1]))
-        not_1075_le = torch.cat(not_1075_le, dim=-1)
-        
+        not_1075_le = self.exp_not(const_1075_le)
+
         borrow = ones
         for i in range(11):
-            s, c = self.ge_no_frac[i](e_x_le[..., i:i+1], not_1075_le[..., i:i+1], borrow)
+            s, c = self.ge_no_frac(e_x_le[..., i:i+1], not_1075_le[..., i:i+1], borrow)
             borrow = c
         e_ge_1075 = borrow  # E >= 1075
-        
+
         # 3. 清零小数位
         cleared_mant = []
         frac_bits = []
@@ -153,21 +147,18 @@ class SpikeFP64Floor(nn.Module):
             th_le = torch.zeros(batch_shape + (11,), device=device)
             for bit_idx in range(11):
                 th_le[..., bit_idx] = float((threshold >> bit_idx) & 1)
-            
-            not_th_le = []
-            for j in range(11):
-                not_th_le.append(self.mant_clear_not[i](th_le[..., j:j+1]))
-            not_th_le = torch.cat(not_th_le, dim=-1)
-            
+
+            not_th_le = self.mant_clear_not(th_le)
+
             borrow = ones
             for j in range(11):
-                s, c = self.mant_clear_cmp[i][j](e_x_le[..., j:j+1], not_th_le[..., j:j+1], borrow)
+                s, c = self.mant_clear_cmp(e_x_le[..., j:j+1], not_th_le[..., j:j+1], borrow)
                 borrow = c
-            
-            is_frac = self.mant_clear_not[i](borrow)  # E < threshold means this bit is fractional
+
+            is_frac = self.mant_clear_not(borrow)  # E < threshold means this bit is fractional
             frac_bits.append(is_frac)
-            
-            cleared_bit = self.mant_mux[i](is_frac, zeros, m_x[..., i:i+1])
+
+            cleared_bit = self.mant_mux(is_frac, zeros, m_x[..., i:i+1])
             cleared_mant.append(cleared_bit)
         
         cleared_mant = torch.cat(cleared_mant, dim=-1)
@@ -204,14 +195,13 @@ class SpikeFP64Floor(nn.Module):
         return result
     
     def reset(self):
-        for g in self.exp_sub: g.reset()
-        for g in self.exp_not: g.reset()
+        self.exp_sub.reset()
+        self.exp_not.reset()
         self.lt_bias_not.reset()
-        for g in self.ge_no_frac: g.reset()
-        for cmp_list in self.mant_clear_cmp:
-            for g in cmp_list: g.reset()
-        for g in self.mant_clear_not: g.reset()
-        for g in self.mant_mux: g.reset()
+        self.ge_no_frac.reset()
+        self.mant_clear_cmp.reset()
+        self.mant_clear_not.reset()
+        self.mant_mux.reset()
         self.frac_and.reset()
         self.frac_or_tree.reset()
         self.neg_frac_and.reset()
@@ -233,21 +223,21 @@ class SpikeFP64ScaleBy2K(nn.Module):
         super().__init__()
         nt = neuron_template
 
-        # E - 1023
-        self.exp_sub_bias = nn.ModuleList([FullAdder(neuron_template=nt) for _ in range(11)])
-        self.exp_not_bias = nn.ModuleList([NOTGate(neuron_template=nt) for _ in range(11)])
+        # E - 1023 - 单实例
+        self.exp_sub_bias = FullAdder(neuron_template=nt)
+        self.exp_not_bias = NOTGate(neuron_template=nt)
 
-        # Barrel Shifter Right (向量化: 4层VecMUX，每层处理16位)
-        self.shift_mux = nn.ModuleList([VecMUX(neuron_template=nt) for _ in range(4)])
-        self.shift_not = nn.ModuleList([NOTGate(neuron_template=nt) for _ in range(4)])
+        # Barrel Shifter Right (向量化: 单实例VecMUX，动态扩展机制支持复用)
+        self.shift_mux = VecMUX(neuron_template=nt)
+        self.shift_not = NOTGate(neuron_template=nt)
 
-        # 符号处理 (向量化)
-        self.neg_not = nn.ModuleList([NOTGate(neuron_template=nt) for _ in range(11)])
-        self.neg_add = nn.ModuleList([FullAdder(neuron_template=nt) for _ in range(11)])
+        # 符号处理 (向量化) - 单实例
+        self.neg_not = NOTGate(neuron_template=nt)
+        self.neg_add = FullAdder(neuron_template=nt)
         self.sign_mux = VecMUX(neuron_template=nt)
 
-        # 指数相加
-        self.exp_add = nn.ModuleList([FullAdder(neuron_template=nt) for _ in range(11)])
+        # 指数相加 - 单实例
+        self.exp_add = FullAdder(neuron_template=nt)
 
         # k=0检测 (向量化)
         self.k_zero_or = VecORTree(neuron_template=nt)
@@ -255,80 +245,73 @@ class SpikeFP64ScaleBy2K(nn.Module):
         self.zero_mux = VecMUX(neuron_template=nt)
         
     def forward(self, x, k):
-        self.reset()
         device = x.device
         batch_shape = x.shape[:-1]
         zeros = torch.zeros(batch_shape + (1,), device=device)
         ones = torch.ones(batch_shape + (1,), device=device)
-        
+
         s_x = x[..., 0:1]
         e_x = x[..., 1:12]
         m_x = x[..., 12:64]
-        
+
         s_k = k[..., 0:1]
         e_k = k[..., 1:12]
         m_k = k[..., 12:64]
         
-        # 1. 计算 shift = e_k - 1023 (k的指数偏移)
+        # 1. 计算 shift = e_k - 1023 (k的指数偏移) - 向量化
         e_k_le = e_k.flip(-1)  # LSB first
         const_1023_le = torch.cat([ones]*10 + [zeros], dim=-1)
-        not_1023_le = []
-        for i in range(11):
-            not_1023_le.append(self.exp_not_bias[i](const_1023_le[..., i:i+1]))
-        not_1023_le = torch.cat(not_1023_le, dim=-1)
-        
+        not_1023_le = self.exp_not_bias(const_1023_le)
+
         shift = []
         borrow = ones
         for i in range(11):
-            s, c = self.exp_sub_bias[i](e_k_le[..., i:i+1], not_1023_le[..., i:i+1], borrow)
+            s, c = self.exp_sub_bias(e_k_le[..., i:i+1], not_1023_le[..., i:i+1], borrow)
             shift.append(s)
             borrow = c
         shift = torch.cat(shift, dim=-1)  # LSB first, 这是指数偏移
-        
+
         # 2. 构造完整的值: 1.m_k (16位: 隐藏位 + 15位尾数高位)
         val = torch.cat([ones, m_k[..., 0:15]], dim=-1)  # 16位, MSB first
-        
+
         # 右移 (15 - shift) 位 (向量化)
         current = val.flip(-1)  # 转LSB first方便处理
         zeros_16 = torch.zeros(batch_shape + (16,), device=device)
         for layer in range(4):
             shift_amt = 1 << layer
-            s_bar = self.shift_not[layer](shift[..., layer:layer+1])
+            s_bar = self.shift_not(shift[..., layer:layer+1])
             s_bar_16 = s_bar.expand(batch_shape + (16,))
             # 构造 shifted 版本
             if shift_amt < 16:
                 shifted = torch.cat([current[..., shift_amt:], zeros_16[..., :shift_amt]], dim=-1)
             else:
                 shifted = zeros_16
-            current = self.shift_mux[layer](s_bar_16, shifted, current)
-        
+            current = self.shift_mux(s_bar_16, shifted, current)
+
         # 取低11位作为k的整数值
         k_abs_le = current[..., :11]  # LSB first
-        
-        # 3. 处理符号
-        not_k = []
-        for i in range(11):
-            not_k.append(self.neg_not[i](k_abs_le[..., i:i+1]))
-        not_k = torch.cat(not_k, dim=-1)
-        
+
+        # 3. 处理符号 (向量化)
+        not_k = self.neg_not(k_abs_le)
+
         neg_k = []
         carry = ones
         for i in range(11):
-            s, c = self.neg_add[i](not_k[..., i:i+1], zeros, carry)
+            s, c = self.neg_add(not_k[..., i:i+1], zeros, carry)
             neg_k.append(s)
             carry = c
         neg_k = torch.cat(neg_k, dim=-1)
-        
+
         # 符号选择 (向量化)
         s_k_11 = s_k.expand(batch_shape + (11,))
         k_final = self.sign_mux(s_k_11, neg_k, k_abs_le)
-        
+
         # 4. 指数相加: E_new = E_x + k
         e_x_le = e_x.flip(-1)
         e_new = []
         carry = zeros
         for i in range(11):
-            s, c = self.exp_add[i](e_x_le[..., i:i+1], k_final[..., i:i+1], carry)
+            s, c = self.exp_add(e_x_le[..., i:i+1], k_final[..., i:i+1], carry)
             e_new.append(s)
             carry = c
         e_new = torch.cat(e_new, dim=-1).flip(-1)  # 转回MSB first
@@ -344,14 +327,14 @@ class SpikeFP64ScaleBy2K(nn.Module):
         return self.zero_mux(k_is_zero_64, x, result_scaled)
     
     def reset(self):
-        for g in self.exp_sub_bias: g.reset()
-        for g in self.exp_not_bias: g.reset()
-        for g in self.shift_mux: g.reset()
-        for g in self.shift_not: g.reset()
-        for g in self.neg_not: g.reset()
-        for g in self.neg_add: g.reset()
+        self.exp_sub_bias.reset()
+        self.exp_not_bias.reset()
+        self.shift_mux.reset()
+        self.shift_not.reset()
+        self.neg_not.reset()
+        self.neg_add.reset()
         self.sign_mux.reset()
-        for g in self.exp_add: g.reset()
+        self.exp_add.reset()
         self.k_zero_or.reset()
         self.k_zero_not.reset()
         self.zero_mux.reset()
@@ -384,7 +367,6 @@ class SpikeFP64LookupExp2(nn.Module):
 
     def forward(self, idx_bits):
         """idx_bits: [..., 6] 6位索引 MSB first"""
-        self.reset()
         batch_shape = idx_bits.shape[:-1]
         device = idx_bits.device
 
@@ -440,97 +422,91 @@ class SpikeFP64ExtractLow6(nn.Module):
     def __init__(self, neuron_template=None):
         super().__init__()
         nt = neuron_template
-        
-        # E - 1023
-        self.exp_sub = nn.ModuleList([FullAdder(neuron_template=nt) for _ in range(11)])
-        self.exp_not = nn.ModuleList([NOTGate(neuron_template=nt) for _ in range(11)])
-        
-        # shift解码
-        self.shift_not = nn.ModuleList([NOTGate(neuron_template=nt) for _ in range(11)])
-        self.shift_and = nn.ModuleList([ANDGate(neuron_template=nt) for _ in range(20)])
-        
-        # 输出逻辑
-        self.b_ands = nn.ModuleList([nn.ModuleList([ANDGate(neuron_template=nt) for _ in range(7)]) for _ in range(6)])
-        self.b_ors = nn.ModuleList([nn.ModuleList([ORGate(neuron_template=nt) for _ in range(6)]) for _ in range(6)])
+
+        # E - 1023 - 单实例
+        self.exp_sub = FullAdder(neuron_template=nt)
+        self.exp_not = NOTGate(neuron_template=nt)
+
+        # shift解码 - 单实例
+        self.shift_not = NOTGate(neuron_template=nt)
+        self.shift_and = ANDGate(neuron_template=nt)
+
+        # 输出逻辑 - 单实例
+        self.b_ands = ANDGate(neuron_template=nt)
+        self.b_ors = ORGate(neuron_template=nt)
         
     def forward(self, x):
-        self.reset()
         device = x.device
         batch_shape = x.shape[:-1]
         zeros = torch.zeros(batch_shape + (1,), device=device)
         ones = torch.ones(batch_shape + (1,), device=device)
-        
+
         e_x = x[..., 1:12]
         m_x = x[..., 12:64]
-        
+
         e_x_le = e_x.flip(-1)
-        
-        # E - 1023
+
+        # E - 1023 (向量化)
         const_1023_le = torch.cat([ones]*10 + [zeros], dim=-1)
-        not_1023_le = []
-        for i in range(11):
-            not_1023_le.append(self.exp_not[i](const_1023_le[..., i:i+1]))
-        not_1023_le = torch.cat(not_1023_le, dim=-1)
-        
+        not_1023_le = self.exp_not(const_1023_le)
+
         shift = []
         borrow = ones
         for i in range(11):
-            s, c = self.exp_sub[i](e_x_le[..., i:i+1], not_1023_le[..., i:i+1], borrow)
+            s, c = self.exp_sub(e_x_le[..., i:i+1], not_1023_le[..., i:i+1], borrow)
             shift.append(s)
             borrow = c
         shift = torch.cat(shift, dim=-1)  # LSB first
-        
+
         # 解码 shift (0..5)
         s_bits = [shift[..., i:i+1] for i in range(11)]
-        s_inv = [self.shift_not[i](s_bits[i]) for i in range(11)]
-        
+        s_inv = [self.shift_not(s_bits[i]) for i in range(11)]
+
         # 高8位必须为0
         hi_zero = s_inv[3]
         for i in range(4, 11):
-            hi_zero = self.shift_and[i-4](hi_zero, s_inv[i])
-        
+            hi_zero = self.shift_and(hi_zero, s_inv[i])
+
         # 解码低3位
-        is_0 = self.shift_and[7](hi_zero, self.shift_and[8](s_inv[0], self.shift_and[9](s_inv[1], s_inv[2])))
-        is_1 = self.shift_and[10](hi_zero, self.shift_and[11](s_bits[0], self.shift_and[12](s_inv[1], s_inv[2])))
-        is_2 = self.shift_and[13](hi_zero, self.shift_and[14](s_inv[0], self.shift_and[15](s_bits[1], s_inv[2])))
-        is_3 = self.shift_and[16](hi_zero, self.shift_and[17](s_bits[0], self.shift_and[18](s_bits[1], s_inv[2])))
-        is_4 = self.shift_and[19](hi_zero, self.shift_and[8](s_inv[0], self.shift_and[9](s_inv[1], s_bits[2])))
-        is_5 = self.shift_and[10](hi_zero, self.shift_and[11](s_bits[0], self.shift_and[12](s_inv[1], s_bits[2])))
-        
+        is_0 = self.shift_and(hi_zero, self.shift_and(s_inv[0], self.shift_and(s_inv[1], s_inv[2])))
+        is_1 = self.shift_and(hi_zero, self.shift_and(s_bits[0], self.shift_and(s_inv[1], s_inv[2])))
+        is_2 = self.shift_and(hi_zero, self.shift_and(s_inv[0], self.shift_and(s_bits[1], s_inv[2])))
+        is_3 = self.shift_and(hi_zero, self.shift_and(s_bits[0], self.shift_and(s_bits[1], s_inv[2])))
+        is_4 = self.shift_and(hi_zero, self.shift_and(s_inv[0], self.shift_and(s_inv[1], s_bits[2])))
+        is_5 = self.shift_and(hi_zero, self.shift_and(s_bits[0], self.shift_and(s_inv[1], s_bits[2])))
+
         is_s = [is_0, is_1, is_2, is_3, is_4, is_5]
         m = [m_x[..., i:i+1] for i in range(6)]
-        
+
         # 构造输出
         final_bits = []
         for b in range(6):
             terms = []
             for s in range(6):
                 if s == b:
-                    term = self.b_ands[b][s](is_s[s], ones)
+                    term = self.b_ands(is_s[s], ones)
                     terms.append(term)
                 elif s > b and s - 1 - b < 6:
-                    term = self.b_ands[b][s](is_s[s], m[s - 1 - b])
+                    term = self.b_ands(is_s[s], m[s - 1 - b])
                     terms.append(term)
-            
+
             if not terms:
-                res = self.shift_and[0](is_0, is_1)  # Always 0
+                res = self.shift_and(is_0, is_1)  # Always 0
             else:
                 res = terms[0]
                 for i in range(1, len(terms)):
-                    res = self.b_ors[b][i-1](res, terms[i])
+                    res = self.b_ors(res, terms[i])
             final_bits.append(res)
-        
+
         return torch.cat(list(reversed(final_bits)), dim=-1)  # [b5..b0]
     
     def reset(self):
-        for g in self.exp_sub: g.reset()
-        for g in self.exp_not: g.reset()
-        for g in self.shift_not: g.reset()
-        for g in self.shift_and: g.reset()
-        for row in self.b_ands:
-            for g in row: g.reset()
-        for row in self.b_ors:
-            for g in row: g.reset()
+        self.exp_sub.reset()
+        self.exp_not.reset()
+        self.shift_not.reset()
+        self.shift_and.reset()
+        self.b_ands.reset()
+        self.b_ors.reset()
 
 
 # ==============================================================================
@@ -568,23 +544,26 @@ class SpikeFP64Exp(nn.Module):
         self.vec_not = VecNOT(neuron_template=nt)
         self.vec_and = VecAND(neuron_template=nt)
         self.vec_mux = VecMUX(neuron_template=nt)
-        self.vec_and_tree = VecANDTree(neuron_template=nt)
-        self.vec_or_tree = VecORTree(neuron_template=nt)
+
+        # 独立实例的 Tree (不同输入大小需要独立实例)
+        # 指数全1检测 (11-bit)
+        self.vec_and_tree_exp = VecANDTree(neuron_template=nt)
+        # 尾数非零检测 (52-bit)
+        self.vec_or_tree_mant = VecORTree(neuron_template=nt)
 
     def forward(self, x):
-        self.reset()
         device = x.device
         batch_shape = x.shape[:-1]
         zeros = torch.zeros(batch_shape + (1,), device=device)
         ones = torch.ones(batch_shape + (1,), device=device)
-        
+
         s_x = x[..., 0:1]
         e_x = x[..., 1:12]
         m_x = x[..., 12:64]
-        
+
         # 特殊值检测 (向量化)
-        e_all_one = self.vec_and_tree(e_x)
-        m_any = self.vec_or_tree(m_x)
+        e_all_one = self.vec_and_tree_exp(e_x)
+        m_any = self.vec_or_tree_mant(m_x)
         m_is_zero = self.vec_not(m_any)
         
         is_nan = self.vec_and(e_all_one, m_any)
@@ -713,8 +692,9 @@ class SpikeFP64Exp(nn.Module):
         self.vec_not.reset()
         self.vec_and.reset()
         self.vec_mux.reset()
-        self.vec_and_tree.reset()
-        self.vec_or_tree.reset()
+        # Tree instances
+        self.vec_and_tree_exp.reset()
+        self.vec_or_tree_mant.reset()
 
 
 # ==============================================================================
@@ -737,8 +717,6 @@ class SpikeFP32ExpHighPrecision(nn.Module):
         输入: [..., 32] FP32脉冲
         输出: [..., 32] FP32脉冲
         """
-        self.reset()
-        
         # FP32 -> FP64
         x_fp64 = self.fp32_to_fp64(x)
         
@@ -784,13 +762,12 @@ class SpikeFP32SigmoidFullFP64(nn.Module):
         输入: [..., 32] FP32脉冲
         输出: [..., 32] FP32脉冲
         """
-        self.reset()
         device = x.device
         batch_shape = x.shape[:-1]
-        
+
         # FP32 -> FP64
         x_fp64 = self.fp32_to_fp64(x)
-        
+
         # -x (翻转符号位)
         neg_x_sign = self.sign_not(x_fp64[..., 0:1])
         neg_x = torch.cat([neg_x_sign, x_fp64[..., 1:]], dim=-1)
@@ -843,13 +820,12 @@ class SpikeFP32SiLUFullFP64(nn.Module):
         self.sign_not = NOTGate(neuron_template=nt)
         
     def forward(self, x):
-        self.reset()
         device = x.device
         batch_shape = x.shape[:-1]
-        
+
         # FP32 -> FP64
         x_fp64 = self.fp32_to_fp64(x)
-        
+
         # sigmoid(x) = 1 / (1 + exp(-x))
         neg_x_sign = self.sign_not(x_fp64[..., 0:1])
         neg_x = torch.cat([neg_x_sign, x_fp64[..., 1:]], dim=-1)
@@ -901,8 +877,6 @@ class SpikeFP32SoftmaxFullFP64(nn.Module):
         输入: [..., N, 32] FP32脉冲
         输出: [..., N, 32] FP32脉冲
         """
-        self.reset()
-
         N = x.shape[-2]
 
         # FP32 -> FP64 (向量化)
@@ -914,7 +888,6 @@ class SpikeFP32SoftmaxFullFP64(nn.Module):
         # sum(exp(x_j)) - 累加有依赖，需要循环
         sum_exp = exp_x[..., 0, :]  # [..., 64]
         for i in range(1, N):
-            self.fp64_adder.reset()
             sum_exp = self.fp64_adder(sum_exp, exp_x[..., i, :])
 
         # exp(x_i) / sum for all i (向量化)

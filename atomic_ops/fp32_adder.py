@@ -38,14 +38,14 @@ class SpikeFP32Adder(nn.Module):
         super().__init__()
         nt = neuron_template
         
-        # ===== 向量化基础门电路 - 每次使用独立实例 =====
-        self.vec_and = nn.ModuleList([VecAND(neuron_template=nt) for _ in range(13)])
-        self.vec_or = nn.ModuleList([VecOR(neuron_template=nt) for _ in range(7)])
-        self.vec_xor = VecXOR(neuron_template=nt)  # 只使用1次
-        self.vec_not = nn.ModuleList([VecNOT(neuron_template=nt) for _ in range(7)])
-        self.vec_mux = nn.ModuleList([VecMUX(neuron_template=nt) for _ in range(27)])
-        self.vec_or_tree = nn.ModuleList([VecORTree(neuron_template=nt) for _ in range(7)])
-        self.vec_and_tree = nn.ModuleList([VecANDTree(neuron_template=nt) for _ in range(3)])
+        # ===== 向量化基础门电路 - 单实例 (动态扩展机制支持不同位宽) =====
+        self.vec_and = VecAND(neuron_template=nt)
+        self.vec_or = VecOR(neuron_template=nt)
+        self.vec_xor = VecXOR(neuron_template=nt)
+        self.vec_not = VecNOT(neuron_template=nt)
+        self.vec_mux = VecMUX(neuron_template=nt)
+        self.vec_or_tree = VecORTree(neuron_template=nt)
+        self.vec_and_tree = VecANDTree(neuron_template=nt)
         
         # ===== 比较器 =====
         self.exp_cmp = Comparator8Bit(neuron_template=nt)
@@ -89,7 +89,6 @@ class SpikeFP32Adder(nn.Module):
         Returns:
             [..., 32] FP32 脉冲
         """
-        self.reset_all()
         device = A.device
         batch_shape = A.shape[:-1]
         zeros = torch.zeros(batch_shape + (1,), device=device)
@@ -105,18 +104,18 @@ class SpikeFP32Adder(nn.Module):
         m_b_raw = B[..., 9:32]
         
         # ===== E=0 检测与隐藏位 (向量化) =====
-        e_a_nonzero = self.vec_or_tree[0](e_a)
-        e_a_is_zero = self.vec_not[0](e_a_nonzero)
+        e_a_nonzero = self.vec_or_tree(e_a)
+        e_a_is_zero = self.vec_not(e_a_nonzero)
         hidden_a = e_a_nonzero
 
-        e_b_nonzero = self.vec_or_tree[1](e_b)
-        e_b_is_zero = self.vec_not[1](e_b_nonzero)
+        e_b_nonzero = self.vec_or_tree(e_b)
+        e_b_is_zero = self.vec_not(e_b_nonzero)
         hidden_b = e_b_nonzero
 
         # 有效指数 (subnormal时E=1)
         e_one = torch.cat([zeros]*7 + [ones], dim=-1)
-        e_a_eff = self.vec_mux[0](e_a_is_zero.expand_as(e_a), e_one, e_a)
-        e_b_eff = self.vec_mux[1](e_b_is_zero.expand_as(e_b), e_one, e_b)
+        e_a_eff = self.vec_mux(e_a_is_zero.expand_as(e_a), e_one, e_a)
+        e_b_eff = self.vec_mux(e_b_is_zero.expand_as(e_b), e_one, e_b)
         
         # 28位尾数: hidden(1) + M(23) + guard(4)
         m_a = torch.cat([hidden_a, m_a_raw, zeros, zeros, zeros, zeros], dim=-1)
@@ -142,30 +141,30 @@ class SpikeFP32Adder(nn.Module):
         diff_ba = diff_ba_lsb.flip(-1)
         
         # 向量化MUX选择指数差
-        exp_diff = self.vec_mux[2](a_ge_b.expand_as(diff_ab), diff_ab, diff_ba)
+        exp_diff = self.vec_mux(a_ge_b.expand_as(diff_ab), diff_ab, diff_ba)
 
         # ===== 检测大指数差 (exp_diff >= 28) =====
         high_bits = exp_diff[..., 0:3]  # bit7,6,5
-        high_bits_any = self.vec_or_tree[2](high_bits)
-        bit4_and_bit3 = self.vec_and[0](exp_diff[..., 3:4], exp_diff[..., 4:5])
-        is_big_diff = self.vec_or[0](high_bits_any, bit4_and_bit3)
+        high_bits_any = self.vec_or_tree(high_bits)
+        bit4_and_bit3 = self.vec_and(exp_diff[..., 3:4], exp_diff[..., 4:5])
+        is_big_diff = self.vec_or(high_bits_any, bit4_and_bit3)
 
         # 取低5位作为移位量
         shift_amt = exp_diff[..., 3:8]  # 最多移31位
 
         # e_max (向量化MUX)
-        e_max = self.vec_mux[3](a_ge_b.expand_as(e_a_eff), e_a_eff, e_b_eff)
+        e_max = self.vec_mux(a_ge_b.expand_as(e_a_eff), e_a_eff, e_b_eff)
 
         # ===== Step 3: 尾数对齐 (向量化) =====
-        m_large = self.vec_mux[4](a_ge_b.expand_as(m_a), m_a, m_b)
-        m_small_unshifted = self.vec_mux[5](a_ge_b.expand_as(m_a), m_b, m_a)
+        m_large = self.vec_mux(a_ge_b.expand_as(m_a), m_a, m_b)
+        m_small_unshifted = self.vec_mux(a_ge_b.expand_as(m_a), m_b, m_a)
 
         m_small, shift_sticky = self.align_shifter(m_small_unshifted, shift_amt)
 
         # ===== Step 4: 符号处理 =====
         is_diff_sign = self.vec_xor(s_a, s_b)
-        exact_cancel = self.vec_and[1](is_diff_sign, a_abs_eq_b)
-        s_large = self.vec_mux[6](a_ge_b, s_a, s_b)
+        exact_cancel = self.vec_and(is_diff_sign, a_abs_eq_b)
+        s_large = self.vec_mux(a_ge_b, s_a, s_b)
         
         # ===== Step 5: 尾数运算 (28位, LSB first) =====
         m_large_lsb = m_large.flip(-1)
@@ -178,16 +177,16 @@ class SpikeFP32Adder(nn.Module):
         diff_result = diff_result_lsb.flip(-1)
         
         # ===== 减法时的sticky补偿 =====
-        need_sub_one = self.vec_and[2](is_diff_sign, shift_sticky)
+        need_sub_one = self.vec_and(is_diff_sign, shift_sticky)
         one_28bit = torch.cat([ones] + [zeros]*27, dim=-1)
         diff_minus_one_lsb, _ = self.sub_one(diff_result_lsb, one_28bit)
         diff_minus_one = diff_minus_one_lsb.flip(-1)
 
-        diff_final = self.vec_mux[7](need_sub_one.expand_as(diff_result), diff_minus_one, diff_result)
+        diff_final = self.vec_mux(need_sub_one.expand_as(diff_result), diff_minus_one, diff_result)
 
         # 选择加减结果
-        mantissa_result = self.vec_mux[8](is_diff_sign.expand_as(diff_final), diff_final, sum_result)
-        result_carry = self.vec_mux[9](is_diff_sign, zeros, sum_carry)
+        mantissa_result = self.vec_mux(is_diff_sign.expand_as(diff_final), diff_final, sum_result)
+        result_carry = self.vec_mux(is_diff_sign, zeros, sum_carry)
         
         # ===== Step 6: 归一化 =====
         lzc = self.lzd(mantissa_result)
@@ -195,7 +194,7 @@ class SpikeFP32Adder(nn.Module):
         
         # 检测下溢
         lzc_gt_emax, lzc_eq_emax = self.underflow_cmp(lzc_8bit, e_max)
-        is_underflow = self.vec_or[1](lzc_gt_emax, lzc_eq_emax)
+        is_underflow = self.vec_or(lzc_gt_emax, lzc_eq_emax)
 
         # 归一化
         norm_mantissa = self.norm_shifter(mantissa_result, lzc)
@@ -209,48 +208,48 @@ class SpikeFP32Adder(nn.Module):
 
         # 选择指数 (向量化)
         zero_8bit = torch.cat([zeros]*8, dim=-1)
-        e_normal = self.vec_mux[10](is_underflow.expand_as(e_after_norm), zero_8bit, e_after_norm)
-        final_e_pre = self.vec_mux[11](result_carry.expand_as(e_plus_one), e_plus_one, e_normal)
+        e_normal = self.vec_mux(is_underflow.expand_as(e_after_norm), zero_8bit, e_after_norm)
+        final_e_pre = self.vec_mux(result_carry.expand_as(e_plus_one), e_plus_one, e_normal)
 
         # ===== Step 7: 提取尾数并舍入 =====
         # 溢出情况: 取位0-22
         m_overflow = mantissa_result[..., 0:23]
         round_overflow = mantissa_result[..., 23:24]
         sticky_overflow_bits = mantissa_result[..., 24:28]
-        sticky_overflow = self.vec_or_tree[3](sticky_overflow_bits)
+        sticky_overflow = self.vec_or_tree(sticky_overflow_bits)
 
         # 正常归一化情况: 取位1-23
         m_norm = norm_mantissa[..., 1:24]
         round_norm = norm_mantissa[..., 24:25]
         sticky_norm_bits = norm_mantissa[..., 25:28]
-        sticky_norm = self.vec_or_tree[4](sticky_norm_bits)
+        sticky_norm = self.vec_or_tree(sticky_norm_bits)
 
         # 下溢情况
         m_subnorm = mantissa_result[..., 0:23]
 
         # 选择尾数 (向量化)
-        m_pre = self.vec_mux[12](result_carry.expand_as(m_overflow), m_overflow, m_norm)
-        round_pre = self.vec_mux[13](result_carry, round_overflow, round_norm)
-        sticky_pre_raw = self.vec_mux[14](result_carry, sticky_overflow, sticky_norm)
+        m_pre = self.vec_mux(result_carry.expand_as(m_overflow), m_overflow, m_norm)
+        round_pre = self.vec_mux(result_carry, round_overflow, round_norm)
+        sticky_pre_raw = self.vec_mux(result_carry, sticky_overflow, sticky_norm)
 
         # 合并shift_sticky
-        not_diff = self.vec_not[2](is_diff_sign)
-        add_shift_sticky = self.vec_and[3](not_diff, shift_sticky)
-        sticky_pre = self.vec_or[2](sticky_pre_raw, add_shift_sticky)
+        not_diff = self.vec_not(is_diff_sign)
+        add_shift_sticky = self.vec_and(not_diff, shift_sticky)
+        sticky_pre = self.vec_or(sticky_pre_raw, add_shift_sticky)
 
         # 下溢选择
-        m_selected = self.vec_mux[15](is_underflow.expand_as(m_subnorm), m_subnorm, m_pre)
+        m_selected = self.vec_mux(is_underflow.expand_as(m_subnorm), m_subnorm, m_pre)
 
         # RNE舍入
         L = m_selected[..., 22:23]
         R = round_pre
         S = sticky_pre
-        sticky_or_L = self.vec_or[3](S, L)
-        do_round = self.vec_and[4](R, sticky_or_L)
+        sticky_or_L = self.vec_or(S, L)
+        do_round = self.vec_and(R, sticky_or_L)
 
         # 下溢时不舍入
-        not_underflow = self.vec_not[3](is_underflow)
-        do_round = self.vec_and[5](do_round, not_underflow)
+        not_underflow = self.vec_not(is_underflow)
+        do_round = self.vec_and(do_round, not_underflow)
         
         # 尾数+1 (LSB first)
         m_selected_lsb = m_selected.flip(-1)
@@ -260,54 +259,54 @@ class SpikeFP32Adder(nn.Module):
         m_rounded = m_rounded_lsb[..., :23].flip(-1)
         
         # 舍入溢出处理 (向量化)
-        not_round_c = self.vec_not[4](round_carry)
-        m_final = self.vec_and[6](not_round_c.expand_as(m_rounded), m_rounded)
+        not_round_c = self.vec_not(round_carry)
+        m_final = self.vec_and(not_round_c.expand_as(m_rounded), m_rounded)
 
         # 指数调整
         exp_round_inc = torch.cat([zeros]*7 + [round_carry], dim=-1)
         e_rounded_lsb, _ = self.round_exp_inc(final_e_pre.flip(-1), exp_round_inc.flip(-1))
         e_rounded = e_rounded_lsb.flip(-1)
 
-        computed_e = self.vec_mux[16](round_carry.expand_as(e_rounded), e_rounded, final_e_pre)
+        computed_e = self.vec_mux(round_carry.expand_as(e_rounded), e_rounded, final_e_pre)
 
         # ===== Step 8: 符号 =====
         computed_s = s_large
 
         # ===== 完全抵消 =====
         zero_23bit = torch.cat([zeros]*23, dim=-1)
-        cancel_s = self.vec_mux[17](exact_cancel, zeros, computed_s)
-        cancel_e = self.vec_mux[18](exact_cancel.expand_as(computed_e), zero_8bit, computed_e)
-        cancel_m = self.vec_mux[19](exact_cancel.expand_as(m_final), zero_23bit, m_final)
+        cancel_s = self.vec_mux(exact_cancel, zeros, computed_s)
+        cancel_e = self.vec_mux(exact_cancel.expand_as(computed_e), zero_8bit, computed_e)
+        cancel_m = self.vec_mux(exact_cancel.expand_as(m_final), zero_23bit, m_final)
 
         # ===== Inf/NaN处理 =====
         # 1. 检测输入 NaN
-        e_a_all_one = self.vec_and_tree[0](e_a)
-        m_a_nonzero = self.vec_or_tree[5](m_a_raw)
-        a_is_nan = self.vec_and[7](e_a_all_one, m_a_nonzero)
+        e_a_all_one = self.vec_and_tree(e_a)
+        m_a_nonzero = self.vec_or_tree(m_a_raw)
+        a_is_nan = self.vec_and(e_a_all_one, m_a_nonzero)
 
-        e_b_all_one = self.vec_and_tree[1](e_b)
-        m_b_nonzero = self.vec_or_tree[6](m_b_raw)
-        b_is_nan = self.vec_and[8](e_b_all_one, m_b_nonzero)
+        e_b_all_one = self.vec_and_tree(e_b)
+        m_b_nonzero = self.vec_or_tree(m_b_raw)
+        b_is_nan = self.vec_and(e_b_all_one, m_b_nonzero)
 
-        any_nan = self.vec_or[4](a_is_nan, b_is_nan)
+        any_nan = self.vec_or(a_is_nan, b_is_nan)
 
         # 2. 检测输入 Inf
-        m_a_zero = self.vec_not[5](m_a_nonzero)
-        a_is_inf = self.vec_and[9](e_a_all_one, m_a_zero)
+        m_a_zero = self.vec_not(m_a_nonzero)
+        a_is_inf = self.vec_and(e_a_all_one, m_a_zero)
 
-        m_b_zero = self.vec_not[6](m_b_nonzero)
-        b_is_inf = self.vec_and[10](e_b_all_one, m_b_zero)
+        m_b_zero = self.vec_not(m_b_nonzero)
+        b_is_inf = self.vec_and(e_b_all_one, m_b_zero)
 
-        any_inf = self.vec_or[5](a_is_inf, b_is_inf)
+        any_inf = self.vec_or(a_is_inf, b_is_inf)
 
         # 3. 检测 Inf - Inf (符号不同且都为Inf)
         # s_a != s_b AND a_is_inf AND b_is_inf
-        both_inf = self.vec_and[11](a_is_inf, b_is_inf)
-        diff_sign_inf = self.vec_and[12](is_diff_sign, both_inf)
+        both_inf = self.vec_and(a_is_inf, b_is_inf)
+        diff_sign_inf = self.vec_and(is_diff_sign, both_inf)
 
         # 4. 结果选择
         # is_nan = any_nan OR (Inf - Inf)
-        result_is_nan = self.vec_or[6](any_nan, diff_sign_inf)
+        result_is_nan = self.vec_or(any_nan, diff_sign_inf)
         
         nan_res = torch.cat([zeros, ones.expand_as(e_a), ones.expand_as(m_a_raw)], dim=-1) # S=0, E=255, M=All 1 (Quiet NaN)
         inf_res = torch.cat([s_large, ones.expand_as(e_a), zeros.expand_as(m_a_raw)], dim=-1) # S=Large, E=255, M=0
@@ -320,11 +319,11 @@ class SpikeFP32Adder(nn.Module):
         # 实际上可以直接级联：
         
         # 原有的 normal_result 计算...
-        computed_e_all_one = self.vec_and_tree[2](computed_e)
+        computed_e_all_one = self.vec_and_tree(computed_e)
         one_8bit_val = torch.cat([ones]*8, dim=-1)
-        final_s = self.vec_mux[20](computed_e_all_one, computed_s, cancel_s)
-        final_e = self.vec_mux[21](computed_e_all_one.expand_as(cancel_e), one_8bit_val, cancel_e)
-        final_m = self.vec_mux[22](computed_e_all_one.expand_as(cancel_m), zero_23bit, cancel_m)
+        final_s = self.vec_mux(computed_e_all_one, computed_s, cancel_s)
+        final_e = self.vec_mux(computed_e_all_one.expand_as(cancel_e), one_8bit_val, cancel_e)
+        final_m = self.vec_mux(computed_e_all_one.expand_as(cancel_m), zero_23bit, cancel_m)
 
         # 这里的 normal_result 包含了原来的逻辑
 
@@ -336,20 +335,20 @@ class SpikeFP32Adder(nn.Module):
         # ... logic continues in next block ...
 
         # ===== 大指数差处理: 直接返回较大的数 =====
-        larger_input = self.vec_mux[23](a_ge_b.expand_as(A), A, B)
+        larger_input = self.vec_mux(a_ge_b.expand_as(A), A, B)
 
         # 组装正常结果
         normal_result_base = torch.cat([final_s, final_e, final_m], dim=-1)
 
         # 根据is_big_diff选择 (Normal Logic)
-        normal_result = self.vec_mux[24](is_big_diff.expand_as(normal_result_base), larger_input, normal_result_base)
+        normal_result = self.vec_mux(is_big_diff.expand_as(normal_result_base), larger_input, normal_result_base)
 
         # 注入 Inf/NaN 逻辑
         # res = MUX(any_inf, inf_res, normal_result)
-        res_with_inf = self.vec_mux[25](any_inf.expand_as(normal_result), inf_res, normal_result)
+        res_with_inf = self.vec_mux(any_inf.expand_as(normal_result), inf_res, normal_result)
 
         # res = MUX(result_is_nan, nan_res, res_with_inf)
-        result = self.vec_mux[26](result_is_nan.expand_as(res_with_inf), nan_res, res_with_inf)
+        result = self.vec_mux(result_is_nan.expand_as(res_with_inf), nan_res, res_with_inf)
         
         return result
     

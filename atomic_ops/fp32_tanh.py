@@ -56,7 +56,6 @@ class SpikeFP32Tanh(nn.Module):
         输入: [..., 32] FP32脉冲
         输出: [..., 32] FP32脉冲 tanh(x)
         """
-        self.reset()
         device = x.device
         batch_shape = x.shape[:-1]
         
@@ -76,9 +75,8 @@ class SpikeFP32Tanh(nn.Module):
         
         # e^2x - 1
         exp_minus_1 = self.fp64_adder(exp_2x, const_neg1)
-        
+
         # e^2x + 1
-        self.fp64_adder.reset()
         exp_plus_1 = self.fp64_adder(exp_2x, const_1)
         
         # (e^2x - 1) / (e^2x + 1)

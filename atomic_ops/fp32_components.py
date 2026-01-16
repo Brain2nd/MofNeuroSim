@@ -40,14 +40,13 @@ class ComparatorNBit(nn.Module):
         # 前缀逻辑有依赖，使用树归约
         self.eq_tree = VecANDTree(neuron_template=nt)  # 最终 a_eq_b
         
-        # 用于 a_gt_b 的逐位计算（有依赖，需要独立实例）
-        self.eq_prefix_and = nn.ModuleList([VecAND(neuron_template=nt) for _ in range(max(1, bits - 1))])
-        self.result_and = nn.ModuleList([VecAND(neuron_template=nt) for _ in range(max(1, bits - 1))])
-        self.result_or = nn.ModuleList([VecOR(neuron_template=nt) for _ in range(max(1, bits - 1))])
+        # 用于 a_gt_b 的逐位计算（单实例，动态扩展支持）
+        self.eq_prefix_and = VecAND(neuron_template=nt)
+        self.result_and = VecAND(neuron_template=nt)
+        self.result_or = VecOR(neuron_template=nt)
         
     def forward(self, A, B):
         """A, B: [..., bits] (MSB first)"""
-        self.reset()
         n = self.bits
         
         # 向量化计算：一次处理所有 n 位
@@ -69,12 +68,12 @@ class ComparatorNBit(nn.Module):
         
         for i in range(1, n):
             # term = eq_prefix AND gt[i]
-            term = self.result_and[i-1](eq_prefix, gt_all[..., i:i+1])
-            a_gt_b = self.result_or[i-1](a_gt_b, term)
+            term = self.result_and(eq_prefix, gt_all[..., i:i+1])
+            a_gt_b = self.result_or(a_gt_b, term)
 
             # 更新 eq_prefix = eq_prefix AND eq[i] (除了最后一位)
             if i < n - 1:
-                eq_prefix = self.eq_prefix_and[i-1](eq_prefix, eq_all[..., i:i+1])
+                eq_prefix = self.eq_prefix_and(eq_prefix, eq_all[..., i:i+1])
         
         return a_gt_b, a_eq_b
     
@@ -84,9 +83,9 @@ class ComparatorNBit(nn.Module):
         self.vec_not_b.reset()
         self.vec_gt_and.reset()
         self.eq_tree.reset()
-        for g in self.eq_prefix_and: g.reset()
-        for g in self.result_and: g.reset()
-        for g in self.result_or: g.reset()
+        self.eq_prefix_and.reset()
+        self.result_and.reset()
+        self.result_or.reset()
 
 
 class Comparator8Bit(ComparatorNBit):
@@ -104,7 +103,7 @@ class Comparator24Bit(ComparatorNBit):
 class SubtractorNBit(nn.Module):
     """N位减法器 - 向量化SNN实现 (LSB first)
 
-    每位使用独立的门电路实例，符合"上层reset，下层仅提供接口"原则。
+    单实例门电路，动态扩展机制支持不同位宽。
 
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
@@ -114,19 +113,18 @@ class SubtractorNBit(nn.Module):
         self.bits = bits
         nt = neuron_template
 
-        # 每位独立的门电路实例
-        self.vec_xor1 = nn.ModuleList([VecXOR(neuron_template=nt) for _ in range(bits)])
-        self.vec_xor2 = nn.ModuleList([VecXOR(neuron_template=nt) for _ in range(bits)])
-        self.vec_not_a = nn.ModuleList([VecNOT(neuron_template=nt) for _ in range(bits)])
-        self.vec_and1 = nn.ModuleList([VecAND(neuron_template=nt) for _ in range(bits)])
-        self.vec_and2 = nn.ModuleList([VecAND(neuron_template=nt) for _ in range(bits)])
-        self.vec_and3 = nn.ModuleList([VecAND(neuron_template=nt) for _ in range(bits)])
-        self.vec_or1 = nn.ModuleList([VecOR(neuron_template=nt) for _ in range(bits)])
-        self.vec_or2 = nn.ModuleList([VecOR(neuron_template=nt) for _ in range(bits)])
+        # 单实例门电路（动态扩展支持）
+        self.vec_xor1 = VecXOR(neuron_template=nt)
+        self.vec_xor2 = VecXOR(neuron_template=nt)
+        self.vec_not_a = VecNOT(neuron_template=nt)
+        self.vec_and1 = VecAND(neuron_template=nt)
+        self.vec_and2 = VecAND(neuron_template=nt)
+        self.vec_and3 = VecAND(neuron_template=nt)
+        self.vec_or1 = VecOR(neuron_template=nt)
+        self.vec_or2 = VecOR(neuron_template=nt)
 
     def forward(self, A, B, Bin=None):
         """A - B, LSB first (index 0 = LSB)"""
-        self.reset()
         n = self.bits
 
         if Bin is None:
@@ -139,16 +137,16 @@ class SubtractorNBit(nn.Module):
             a_i = A[..., i:i+1]
             b_i = B[..., i:i+1]
 
-            # 使用独立实例（无需循环内reset）
-            t1 = self.vec_xor1[i](a_i, b_i)
-            diff = self.vec_xor2[i](t1, borrow)
+            # 单实例（动态扩展支持）
+            t1 = self.vec_xor1(a_i, b_i)
+            diff = self.vec_xor2(t1, borrow)
 
-            not_a_i = self.vec_not_a[i](a_i)
-            term1 = self.vec_and1[i](not_a_i, b_i)
-            term2 = self.vec_and2[i](not_a_i, borrow)
-            term3 = self.vec_and3[i](b_i, borrow)
-            t12 = self.vec_or1[i](term1, term2)
-            new_borrow = self.vec_or2[i](t12, term3)
+            not_a_i = self.vec_not_a(a_i)
+            term1 = self.vec_and1(not_a_i, b_i)
+            term2 = self.vec_and2(not_a_i, borrow)
+            term3 = self.vec_and3(b_i, borrow)
+            t12 = self.vec_or1(term1, term2)
+            new_borrow = self.vec_or2(t12, term3)
 
             diffs.append(diff)
             borrow = new_borrow
@@ -157,14 +155,14 @@ class SubtractorNBit(nn.Module):
         return result, borrow
 
     def reset(self):
-        for g in self.vec_xor1: g.reset()
-        for g in self.vec_xor2: g.reset()
-        for g in self.vec_not_a: g.reset()
-        for g in self.vec_and1: g.reset()
-        for g in self.vec_and2: g.reset()
-        for g in self.vec_and3: g.reset()
-        for g in self.vec_or1: g.reset()
-        for g in self.vec_or2: g.reset()
+        self.vec_xor1.reset()
+        self.vec_xor2.reset()
+        self.vec_not_a.reset()
+        self.vec_and1.reset()
+        self.vec_and2.reset()
+        self.vec_and3.reset()
+        self.vec_or1.reset()
+        self.vec_or2.reset()
 
 
 class Subtractor8Bit(SubtractorNBit):
@@ -188,7 +186,6 @@ class RippleCarryAdderNBit(nn.Module):
         
     def forward(self, A, B, Cin=None):
         """A + B, LSB first"""
-        self.reset()
         result, cout = self.vec_adder(A, B)
         return result, cout
     
@@ -224,20 +221,19 @@ class BarrelShifterRight28(nn.Module):
         self.data_bits = 28
         self.shift_bits = 5  # 最多移31位
         nt = neuron_template
-        
-        # 每层使用一个 VecMUX 处理所有位
-        self.vec_mux_layers = nn.ModuleList([VecMUX(neuron_template=nt) for _ in range(self.shift_bits)])
+
+        # 单个 VecMUX 处理所有层 (动态扩展机制支持)
+        self.vec_mux = VecMUX(neuron_template=nt)
             
     def forward(self, X, shift):
         """X: [..., 28], shift: [..., 5] (MSB first)"""
-        self.reset()
         zeros = torch.zeros_like(X[..., 0:1])
-        
+
         current = X
         for layer in range(self.shift_bits):
             shift_amt = 2 ** (self.shift_bits - 1 - layer)
             s_bit = shift[..., layer:layer+1]
-            
+
             # 构建移位后的版本
             if shift_amt < self.data_bits:
                 # 右移: 高位补零，低位移入
@@ -247,18 +243,17 @@ class BarrelShifterRight28(nn.Module):
                 ], dim=-1)
             else:
                 shifted = zeros.expand(*zeros.shape[:-1], self.data_bits)
-            
+
             # 扩展 s_bit 到所有位
             s_bit_expanded = s_bit.expand(*s_bit.shape[:-1], self.data_bits)
-            
+
             # 并行 MUX: 选择移位或保持
-            current = self.vec_mux_layers[layer](s_bit_expanded, shifted, current)
-        
+            current = self.vec_mux(s_bit_expanded, shifted, current)
+
         return current
-    
+
     def reset(self):
-        for mux in self.vec_mux_layers:
-            mux.reset()
+        self.vec_mux.reset()
 
 
 class BarrelShifterRight28WithSticky(nn.Module):
@@ -274,14 +269,14 @@ class BarrelShifterRight28WithSticky(nn.Module):
         self.data_bits = 28
         self.shift_bits = 5
         nt = neuron_template
-        
-        # 每层使用一个 VecMUX 处理所有位
-        self.vec_mux_layers = nn.ModuleList([VecMUX(neuron_template=nt) for _ in range(self.shift_bits)])
 
-        # Sticky 计算：每层独立实例
-        self.sticky_or_tree = nn.ModuleList([VecORTree(neuron_template=nt) for _ in range(self.shift_bits)])
-        self.sticky_mux = nn.ModuleList([VecMUX(neuron_template=nt) for _ in range(self.shift_bits)])
-        self.sticky_accum_or = nn.ModuleList([VecOR(neuron_template=nt) for _ in range(self.shift_bits)])
+        # 单个 VecMUX 处理所有层 (动态扩展机制支持)
+        self.vec_mux = VecMUX(neuron_template=nt)
+
+        # Sticky 计算：单实例（动态扩展支持）
+        self.sticky_or_tree = VecORTree(neuron_template=nt)
+        self.sticky_mux = VecMUX(neuron_template=nt)
+        self.sticky_accum_or = VecOR(neuron_template=nt)
         
     def forward(self, X, shift):
         """X: [..., 28], shift: [..., 5] (MSB first，bit0是MSB，bit27是LSB)
@@ -300,13 +295,13 @@ class BarrelShifterRight28WithSticky(nn.Module):
             if shift_amt <= self.data_bits:
                 start_idx = self.data_bits - shift_amt
                 shifted_out_bits = current[..., start_idx:]  # [..., shift_amt]
-                layer_sticky = self.sticky_or_tree[layer](shifted_out_bits)
+                layer_sticky = self.sticky_or_tree(shifted_out_bits)
             else:
                 layer_sticky = zeros
 
             # 如果这层移位了，累积 sticky
-            layer_sticky_selected = self.sticky_mux[layer](s_bit, layer_sticky, zeros)
-            sticky_accum = self.sticky_accum_or[layer](sticky_accum, layer_sticky_selected)
+            layer_sticky_selected = self.sticky_mux(s_bit, layer_sticky, zeros)
+            sticky_accum = self.sticky_accum_or(sticky_accum, layer_sticky_selected)
             
             # 构建移位后的版本 (并行)
             if shift_amt < self.data_bits:
@@ -321,22 +316,22 @@ class BarrelShifterRight28WithSticky(nn.Module):
             s_bit_expanded = s_bit.expand(*s_bit.shape[:-1], self.data_bits)
             
             # 并行 MUX
-            current = self.vec_mux_layers[layer](s_bit_expanded, shifted, current)
-        
+            current = self.vec_mux(s_bit_expanded, shifted, current)
+
         return current, sticky_accum
-    
+
     def reset(self):
-        for mux in self.vec_mux_layers: mux.reset()
-        for g in self.sticky_or_tree: g.reset()
-        for mux in self.sticky_mux: mux.reset()
-        for g in self.sticky_accum_or: g.reset()
+        self.vec_mux.reset()
+        self.sticky_or_tree.reset()
+        self.sticky_mux.reset()
+        self.sticky_accum_or.reset()
 
 
 class BarrelShifterLeft28(nn.Module):
     """28位桶形左移位器 - 向量化SNN实现
-    
+
     每层 MUX 操作并行处理所有 28 位
-    
+
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
     """
@@ -345,20 +340,19 @@ class BarrelShifterLeft28(nn.Module):
         self.data_bits = 28
         self.shift_bits = 5
         nt = neuron_template
-        
-        # 每层使用一个 VecMUX 处理所有位
-        self.vec_mux_layers = nn.ModuleList([VecMUX(neuron_template=nt) for _ in range(self.shift_bits)])
+
+        # 单个 VecMUX 处理所有层 (动态扩展机制支持)
+        self.vec_mux = VecMUX(neuron_template=nt)
             
     def forward(self, X, shift):
         """X: [..., 28], shift: [..., 5] (MSB first)"""
-        self.reset()
         zeros = torch.zeros_like(X[..., 0:1])
-        
+
         current = X
         for layer in range(self.shift_bits):
             shift_amt = 2 ** (self.shift_bits - 1 - layer)
             s_bit = shift[..., layer:layer+1]
-            
+
             # 构建左移后的版本
             if shift_amt < self.data_bits:
                 # 左移: 低位补零，高位移出
@@ -368,18 +362,17 @@ class BarrelShifterLeft28(nn.Module):
                 ], dim=-1)
             else:
                 shifted = zeros.expand(*zeros.shape[:-1], self.data_bits)
-            
+
             # 扩展 s_bit 到所有位
             s_bit_expanded = s_bit.expand(*s_bit.shape[:-1], self.data_bits)
-            
+
             # 并行 MUX
-            current = self.vec_mux_layers[layer](s_bit_expanded, shifted, current)
-        
+            current = self.vec_mux(s_bit_expanded, shifted, current)
+
         return current
-    
+
     def reset(self):
-        for mux in self.vec_mux_layers:
-            mux.reset()
+        self.vec_mux.reset()
 
 
 # ==============================================================================
@@ -388,7 +381,7 @@ class BarrelShifterLeft28(nn.Module):
 class LeadingZeroDetector28(nn.Module):
     """28位前导零检测器 - 向量化SNN实现
 
-    每次迭代使用独立的门电路实例，符合"上层reset，下层仅提供接口"原则。
+    单实例门电路，动态扩展机制支持不同位宽。
 
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
@@ -396,65 +389,56 @@ class LeadingZeroDetector28(nn.Module):
     def __init__(self, neuron_template=None):
         super().__init__()
         nt = neuron_template
-        # 每次迭代独立的门电路实例
-        self.vec_not_found = nn.ModuleList([VecNOT(neuron_template=nt) for _ in range(28)])
+        # 单实例门电路（动态扩展支持）
+        self.vec_not_found = VecNOT(neuron_template=nt)
         self.vec_not_all_zero = VecNOT(neuron_template=nt)
-        self.vec_and_first = nn.ModuleList([VecAND(neuron_template=nt) for _ in range(28)])
-        self.vec_or_found = nn.ModuleList([VecOR(neuron_template=nt) for _ in range(28)])
-        # 每个lzc[b]最多被更新28次，为每个b创建28个实例
-        self.vec_or_lzc = nn.ModuleList([
-            nn.ModuleList([VecOR(neuron_template=nt) for _ in range(28)])
-            for _ in range(5)
-        ])
-        self.vec_or_final = nn.ModuleList([VecOR(neuron_template=nt) for _ in range(3)])
+        self.vec_and_first = VecAND(neuron_template=nt)
+        self.vec_or_found = VecOR(neuron_template=nt)
+        # lzc 位更新用单实例
+        self.vec_or_lzc = VecOR(neuron_template=nt)
+        self.vec_or_final = VecOR(neuron_template=nt)
 
     def forward(self, X):
         """X: [..., 28], returns: [..., 5] (LZC, MSB first)"""
-        self.reset()
         device = X.device
         batch_shape = X.shape[:-1]
         zeros = torch.zeros(batch_shape + (1,), device=device)
 
         lzc = [zeros.clone() for _ in range(5)]
         found = zeros.clone()
-        lzc_counts = [0] * 5  # 追踪每个lzc[b]的使用次数
 
         for i in range(28):
             bit = X[..., i:i+1]
-            not_found = self.vec_not_found[i](found)
-            is_first = self.vec_and_first[i](bit, not_found)
+            not_found = self.vec_not_found(found)
+            is_first = self.vec_and_first(bit, not_found)
 
             pos = i
             # 将位置编码为5位
             for b in range(5):
                 pos_bit = (pos >> (4 - b)) & 1
                 if pos_bit:
-                    lzc[b] = self.vec_or_lzc[b][lzc_counts[b]](lzc[b], is_first)
-                    lzc_counts[b] += 1
+                    lzc[b] = self.vec_or_lzc(lzc[b], is_first)
 
             # found = found OR is_first
-            found = self.vec_or_found[i](found, is_first)
+            found = self.vec_or_found(found, is_first)
 
         # 全零情况: 返回 28 (二进制 11100)
         all_zero = self.vec_not_all_zero(found)
         # 28 = 0b11100 = [1, 1, 1, 0, 0]
         all_zero_bits = [1, 1, 1, 0, 0]
-        final_idx = 0
         for b in range(5):
             if all_zero_bits[b]:
-                lzc[b] = self.vec_or_final[final_idx](lzc[b], all_zero)
-                final_idx += 1
+                lzc[b] = self.vec_or_final(lzc[b], all_zero)
 
         return torch.cat(lzc, dim=-1)
 
     def reset(self):
-        for g in self.vec_not_found: g.reset()
+        self.vec_not_found.reset()
         self.vec_not_all_zero.reset()
-        for g in self.vec_and_first: g.reset()
-        for g in self.vec_or_found: g.reset()
-        for b_list in self.vec_or_lzc:
-            for g in b_list: g.reset()
-        for g in self.vec_or_final: g.reset()
+        self.vec_and_first.reset()
+        self.vec_or_found.reset()
+        self.vec_or_lzc.reset()
+        self.vec_or_final.reset()
 
 
 # ==============================================================================
@@ -500,14 +484,14 @@ class FP8ToFP32Converter(nn.Module):
         
         # 纯SNN NOT门 - 向量化
         self.vec_not = VecNOT(neuron_template=nt)
-        
+
         # 纯SNN AND门 - 向量化
         self.vec_and = VecAND(neuron_template=nt)
-        
+
         # 纯SNN OR门 - 向量化
         self.vec_or = VecOR(neuron_template=nt)
-        
-        # 纯SNN MUX门 - 向量化
+
+        # 纯SNN MUX门 - 向量化 (动态扩展机制支持不同位宽)
         self.vec_mux = VecMUX(neuron_template=nt)
         
     def forward(self, fp8_pulse):
@@ -517,7 +501,6 @@ class FP8ToFP32Converter(nn.Module):
         Returns:
             fp32_pulse: [..., 32] FP32 脉冲 [S, E7..E0, M22..M0]
         """
-        self.reset()
         device = fp8_pulse.device
         batch_shape = fp8_pulse.shape[:-1]
         zeros = torch.zeros(batch_shape + (1,), device=device)
@@ -625,7 +608,7 @@ class FP8ToFP32Converter(nn.Module):
         e_normal_or_sub = self.vec_mux(is_subnormal_exp, sub_exp, fp32_exp_raw)
         # 真零时使用 0
         fp32_exp = self.vec_mux(is_true_zero_exp, zero_exp, e_normal_or_sub)
-        
+
         # 选择尾数 (使用向量化 MUX 门)
         normal_mant = torch.cat([m2, m1, m0] + [zeros] * 20, dim=-1)
         is_subnormal_mant = is_subnormal.expand(*is_subnormal.shape[:-1], 23)
@@ -683,8 +666,8 @@ class FP32ToFP8Converter(nn.Module):
         self.rne_or = ORGate(neuron_template=nt)
         self.rne_and = ANDGate(neuron_template=nt)
         
-        # Sticky bit OR 树
-        self.sticky_or = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(19)])
+        # Sticky bit OR（单实例）
+        self.sticky_or = ORGate(neuron_template=nt)
         
         # 尾数 +1 (4位: 包含进位检测)
         self.mant_inc = RippleCarryAdder(bits=4, neuron_template=nt)
@@ -715,15 +698,12 @@ class FP32ToFP8Converter(nn.Module):
         self.vec_subnorm_mux_m = VecMUX(neuron_template=nt)  # 3位并行
         
         # ===== 纯 SNN 门电路替换比较运算 =====
-        # Subnormal 处理的 sticky bit OR 树
-        # sticky_120: OR of 20 bits (m19..m0)
-        self.sticky_120_or = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(19)])
-        # sticky_119: OR of 21 bits (m20..m0)
-        self.sticky_119_or = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(20)])
-        # sticky_118: OR of 22 bits (m21..m0)
-        self.sticky_118_or = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(21)])
+        # Subnormal 处理的 sticky bit OR（单实例）
+        self.sticky_120_or = ORGate(neuron_template=nt)
+        self.sticky_119_or = ORGate(neuron_template=nt)
+        self.sticky_118_or = ORGate(neuron_template=nt)
         # mant_is_zero_117: 检测 23 位尾数是否全 0
-        self.mant_117_or = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(22)])
+        self.mant_117_or = ORGate(neuron_template=nt)
         self.mant_117_not = NOTGate(neuron_template=nt)
         
         # 进位检测 (A+B 的进位 = A AND B)
@@ -781,10 +761,10 @@ class FP32ToFP8Converter(nn.Module):
         # ===== 纯 SNN AND 门 (subnorm_overflow 计算) =====
         self.and_subnorm_overflow = ANDGate(neuron_template=nt)  # is_exp_120 AND sub_to_normal_120
 
-        # ===== 纯 SNN MUX 门 (subnorm_m 选择) =====
-        self.mux_subnorm_m0 = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(4)])  # 4路选择器
-        self.mux_subnorm_m1 = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(4)])
-        self.mux_subnorm_m2 = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(4)])
+        # ===== 纯 SNN MUX 门 (subnorm_m 选择)（单实例）=====
+        self.mux_subnorm_m0 = MUXGate(neuron_template=nt)
+        self.mux_subnorm_m1 = MUXGate(neuron_template=nt)
+        self.mux_subnorm_m2 = MUXGate(neuron_template=nt)
 
         # ===== AND 门用于 subnorm_m 的最终选择 =====
         self.and_subnorm_m0 = ANDGate(neuron_template=nt)
@@ -803,7 +783,6 @@ class FP32ToFP8Converter(nn.Module):
         Returns:
             fp8_pulse: [..., 8] FP8 脉冲 [S, E3..E0, M2..M0]
         """
-        self.reset()
         device = fp32_pulse.device
         batch_shape = fp32_pulse.shape[:-1]
         zeros = torch.zeros(batch_shape + (1,), device=device)
@@ -858,7 +837,7 @@ class FP32ToFP8Converter(nn.Module):
         sticky_bits = fp32_mant[..., 4:23]
         S = sticky_bits[..., 0:1]
         for i in range(1, 19):
-            S = self.sticky_or[i-1](S, sticky_bits[..., i:i+1])
+            S = self.sticky_or(S, sticky_bits[..., i:i+1])
         
         # RNE: round_up = R AND (S OR L)
         s_or_l = self.rne_or(S, L)
@@ -958,7 +937,7 @@ class FP32ToFP8Converter(nn.Module):
         # sticky_120: OR(m19..m0) = OR of 20 bits，使用纯 SNN OR 门链
         sticky_120 = fp32_mant[..., 3:4]  # m19 (R)
         for i in range(19):
-            sticky_120 = self.sticky_120_or[i](sticky_120, fp32_mant[..., 4+i:5+i])
+            sticky_120 = self.sticky_120_or(sticky_120, fp32_mant[..., 4+i:5+i])
         # s_or_l_120 = sticky_120 OR lsb_120 (纯 SNN OR 门)
         s_or_l_120 = self.s_or_l_120_or(sticky_120, lsb_120)
         round_up_120 = self.and_round_up_120(round_120, s_or_l_120)  # 纯 SNN AND 门
@@ -981,7 +960,7 @@ class FP32ToFP8Converter(nn.Module):
         # sticky_119: OR(m20..m0) = OR of 21 bits
         sticky_119 = fp32_mant[..., 2:3]  # m20
         for i in range(20):
-            sticky_119 = self.sticky_119_or[i](sticky_119, fp32_mant[..., 3+i:4+i])
+            sticky_119 = self.sticky_119_or(sticky_119, fp32_mant[..., 3+i:4+i])
         s_or_l_119 = self.s_or_l_119_or(sticky_119, lsb_119)  # 纯 SNN OR
         round_up_119 = self.and_round_up_119(round_119, s_or_l_119)  # 纯 SNN AND 门
         sub_m2_119_pre = m2  # m22
@@ -1000,7 +979,7 @@ class FP32ToFP8Converter(nn.Module):
         # sticky_118: OR(m21..m0) = OR of 22 bits
         sticky_118 = fp32_mant[..., 1:2]  # m21
         for i in range(21):
-            sticky_118 = self.sticky_118_or[i](sticky_118, fp32_mant[..., 2+i:3+i])
+            sticky_118 = self.sticky_118_or(sticky_118, fp32_mant[..., 2+i:3+i])
         # s_or_l_118 = sticky_118 OR lsb_118 = sticky_118 OR 1 = 1 (纯 SNN OR)
         s_or_l_118 = self.s_or_l_118_or(sticky_118, lsb_118)  # 始终为 1
         round_up_118 = self.and_round_up_118(round_118, s_or_l_118)  # = m22 (纯 SNN AND 门)
@@ -1019,7 +998,7 @@ class FP32ToFP8Converter(nn.Module):
         # 检测尾数是否全 0: 使用 NOT(OR(all_bits))
         mant_any_117 = fp32_mant[..., 0:1]
         for i in range(22):
-            mant_any_117 = self.mant_117_or[i](mant_any_117, fp32_mant[..., 1+i:2+i])
+            mant_any_117 = self.mant_117_or(mant_any_117, fp32_mant[..., 1+i:2+i])
         mant_is_zero_117 = self.mant_117_not(mant_any_117)  # 1 if all zeros
         
         # 如果尾数是 0（恰好是中点），舍入到 0；否则舍入到 M=1 (纯SNN NOT)
@@ -1035,20 +1014,20 @@ class FP32ToFP8Converter(nn.Module):
         # 选择正确的 subnormal 尾数 (使用纯 SNN MUX 门级联)
         # MUX 级联: exp_117 -> exp_118 -> exp_119 -> exp_120
         # subnorm_m0
-        subnorm_m0_t1 = self.mux_subnorm_m0[0](is_exp_117, sub_m0_117, zeros)  # 117 或 默认0
-        subnorm_m0_t2 = self.mux_subnorm_m0[1](is_exp_118, sub_m0_118, subnorm_m0_t1)  # 118 或 上一步
-        subnorm_m0_t3 = self.mux_subnorm_m0[2](is_exp_119, sub_m0_119, subnorm_m0_t2)  # 119 或 上一步
-        subnorm_m0 = self.mux_subnorm_m0[3](is_exp_120, sub_m0_120, subnorm_m0_t3)  # 120 或 上一步
+        subnorm_m0_t1 = self.mux_subnorm_m0(is_exp_117, sub_m0_117, zeros)  # 117 或 默认0
+        subnorm_m0_t2 = self.mux_subnorm_m0(is_exp_118, sub_m0_118, subnorm_m0_t1)  # 118 或 上一步
+        subnorm_m0_t3 = self.mux_subnorm_m0(is_exp_119, sub_m0_119, subnorm_m0_t2)  # 119 或 上一步
+        subnorm_m0 = self.mux_subnorm_m0(is_exp_120, sub_m0_120, subnorm_m0_t3)  # 120 或 上一步
         # subnorm_m1
-        subnorm_m1_t1 = self.mux_subnorm_m1[0](is_exp_117, sub_m1_117, zeros)
-        subnorm_m1_t2 = self.mux_subnorm_m1[1](is_exp_118, sub_m1_118, subnorm_m1_t1)
-        subnorm_m1_t3 = self.mux_subnorm_m1[2](is_exp_119, sub_m1_119, subnorm_m1_t2)
-        subnorm_m1 = self.mux_subnorm_m1[3](is_exp_120, sub_m1_120, subnorm_m1_t3)
+        subnorm_m1_t1 = self.mux_subnorm_m1(is_exp_117, sub_m1_117, zeros)
+        subnorm_m1_t2 = self.mux_subnorm_m1(is_exp_118, sub_m1_118, subnorm_m1_t1)
+        subnorm_m1_t3 = self.mux_subnorm_m1(is_exp_119, sub_m1_119, subnorm_m1_t2)
+        subnorm_m1 = self.mux_subnorm_m1(is_exp_120, sub_m1_120, subnorm_m1_t3)
         # subnorm_m2
-        subnorm_m2_t1 = self.mux_subnorm_m2[0](is_exp_117, sub_m2_117, zeros)
-        subnorm_m2_t2 = self.mux_subnorm_m2[1](is_exp_118, sub_m2_118, subnorm_m2_t1)
-        subnorm_m2_t3 = self.mux_subnorm_m2[2](is_exp_119, sub_m2_119, subnorm_m2_t2)
-        subnorm_m2 = self.mux_subnorm_m2[3](is_exp_120, sub_m2_120, subnorm_m2_t3)
+        subnorm_m2_t1 = self.mux_subnorm_m2(is_exp_117, sub_m2_117, zeros)
+        subnorm_m2_t2 = self.mux_subnorm_m2(is_exp_118, sub_m2_118, subnorm_m2_t1)
+        subnorm_m2_t3 = self.mux_subnorm_m2(is_exp_119, sub_m2_119, subnorm_m2_t2)
+        subnorm_m2 = self.mux_subnorm_m2(is_exp_120, sub_m2_120, subnorm_m2_t3)
         
         # 纯SNN NOT 操作
         not_subnorm_overflow = self.not_subnorm_overflow(subnorm_overflow)
@@ -1092,7 +1071,7 @@ class FP32ToFP8Converter(nn.Module):
         self.underflow_cmp.reset()
         self.rne_or.reset()
         self.rne_and.reset()
-        for g in self.sticky_or: g.reset()
+        self.sticky_or.reset()
         self.mant_inc.reset()
         self.not_carry.reset()
         self.exp_inc.reset()
@@ -1109,10 +1088,10 @@ class FP32ToFP8Converter(nn.Module):
         self.subnorm_cmp_low.reset()
         self.subnorm_cmp_high.reset()
         # 纯 SNN 门电路
-        for g in self.sticky_120_or: g.reset()
-        for g in self.sticky_119_or: g.reset()
-        for g in self.sticky_118_or: g.reset()
-        for g in self.mant_117_or: g.reset()
+        self.sticky_120_or.reset()
+        self.sticky_119_or.reset()
+        self.sticky_118_or.reset()
+        self.mant_117_or.reset()
         self.mant_117_not.reset()
         self.sub_m2_120_carry_and.reset()
         self.sub_m1_120_carry_and.reset()
@@ -1150,9 +1129,9 @@ class FP32ToFP8Converter(nn.Module):
         self.and_round_up_119.reset()
         self.and_round_up_118.reset()
         self.and_subnorm_overflow.reset()
-        for mux in self.mux_subnorm_m0: mux.reset()
-        for mux in self.mux_subnorm_m1: mux.reset()
-        for mux in self.mux_subnorm_m2: mux.reset()
+        self.mux_subnorm_m0.reset()
+        self.mux_subnorm_m1.reset()
+        self.mux_subnorm_m2.reset()
         self.and_subnorm_m0.reset()
         self.and_subnorm_m1.reset()
         self.and_subnorm_m2.reset()
@@ -1183,17 +1162,17 @@ class FP32ToFP16Converter(nn.Module):
         self.overflow_cmp = Comparator8Bit(neuron_template=nt)
         self.underflow_cmp = Comparator8Bit(neuron_template=nt)
         
-        # NaN/Inf检测
-        self.nan_exp_and = nn.ModuleList([ANDGate(neuron_template=nt) for _ in range(7)])
-        self.nan_mant_or = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(22)])
+        # NaN/Inf检测（单实例）
+        self.nan_exp_and = ANDGate(neuron_template=nt)
+        self.nan_mant_or = ORGate(neuron_template=nt)
         self.is_nan_and = ANDGate(neuron_template=nt)
         self.mant_zero_not = NOTGate(neuron_template=nt)
         self.is_inf_and = ANDGate(neuron_template=nt)
-        
-        # RNE舍入
+
+        # RNE舍入（单实例）
         self.rne_or = ORGate(neuron_template=nt)
         self.rne_and = ANDGate(neuron_template=nt)
-        self.sticky_or = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(11)])
+        self.sticky_or = ORGate(neuron_template=nt)
         
         # 尾数+1
         self.mant_inc = RippleCarryAdderNBit(bits=11, neuron_template=nt)
@@ -1211,12 +1190,11 @@ class FP32ToFP16Converter(nn.Module):
         self.vec_mant_clear_and = VecAND(neuron_template=nt)   # 10位
         
     def forward(self, fp32_pulse):
-        self.reset()
         device = fp32_pulse.device
         batch_shape = fp32_pulse.shape[:-1]
         zeros = torch.zeros(batch_shape + (1,), device=device)
         ones = torch.ones(batch_shape + (1,), device=device)
-        
+
         s = fp32_pulse[..., 0:1]
         fp32_exp = fp32_pulse[..., 1:9]
         fp32_mant = fp32_pulse[..., 9:32]
@@ -1224,11 +1202,11 @@ class FP32ToFP16Converter(nn.Module):
         # NaN检测
         e_all_one = fp32_exp[..., 0:1]
         for i in range(1, 8):
-            e_all_one = self.nan_exp_and[i-1](e_all_one, fp32_exp[..., i:i+1])
+            e_all_one = self.nan_exp_and(e_all_one, fp32_exp[..., i:i+1])
 
         m_any_one = fp32_mant[..., 0:1]
         for i in range(1, 23):
-            m_any_one = self.nan_mant_or[i-1](m_any_one, fp32_mant[..., i:i+1])
+            m_any_one = self.nan_mant_or(m_any_one, fp32_mant[..., i:i+1])
         
         is_nan = self.is_nan_and(e_all_one, m_any_one)
         m_is_zero = self.mant_zero_not(m_any_one)
@@ -1255,7 +1233,7 @@ class FP32ToFP16Converter(nn.Module):
         R = fp32_mant[..., 10:11]
         S = fp32_mant[..., 11:12]
         for i in range(11):
-            S = self.sticky_or[i](S, fp32_mant[..., 12+i:13+i] if 12+i < 23 else zeros)
+            S = self.sticky_or(S, fp32_mant[..., 12+i:13+i] if 12+i < 23 else zeros)
         
         s_or_l = self.rne_or(S, L)
         round_up = self.rne_and(R, s_or_l)
@@ -1306,14 +1284,14 @@ class FP32ToFP16Converter(nn.Module):
         self.exp_sub.reset()
         self.overflow_cmp.reset()
         self.underflow_cmp.reset()
-        for g in self.nan_exp_and: g.reset()
-        for g in self.nan_mant_or: g.reset()
+        self.nan_exp_and.reset()
+        self.nan_mant_or.reset()
         self.is_nan_and.reset()
         self.mant_zero_not.reset()
         self.is_inf_and.reset()
         self.rne_or.reset()
         self.rne_and.reset()
-        for g in self.sticky_or: g.reset()
+        self.sticky_or.reset()
         self.mant_inc.reset()
         self.not_carry.reset()
         self.exp_inc.reset()

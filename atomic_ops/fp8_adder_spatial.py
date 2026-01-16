@@ -35,25 +35,18 @@ class Comparator4Bit(nn.Module):
         self.vec_not_b = NOTGate(neuron_template=nt)    # NOT(B) 所有位
         self.vec_a_gt_b_and = ANDGate(neuron_template=nt)  # A AND NOT(B) 所有位
 
-        # 累积相等条件 (树形结构 - 有依赖)
-        self.eq_and = nn.ModuleList([ANDGate(neuron_template=nt) for _ in range(3)])
+        # 累积相等条件 - 单实例 (动态扩展机制支持复用)
+        self.eq_and = ANDGate(neuron_template=nt)
 
-        # 最终结果组合 (树形结构 - 有依赖)
-        self.result_and = nn.ModuleList([ANDGate(neuron_template=nt) for _ in range(3)])
-        self.result_or = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(3)])
+        # 最终结果组合 - 单实例
+        self.result_and = ANDGate(neuron_template=nt)
+        self.result_or = ORGate(neuron_template=nt)
 
-        # 检测全部相等 (树形结构 - 有依赖)
-        self.final_eq_and = nn.ModuleList([ANDGate(neuron_template=nt) for _ in range(3)])
+        # 检测全部相等 - 单实例
+        self.final_eq_and = ANDGate(neuron_template=nt)
 
     def forward(self, A, B):
         """A, B: [..., 4] (MSB first)"""
-        self.reset()
-
-        # 向量化：所有4位同时处理
-        self.vec_xor.reset()
-        self.vec_not_xor.reset()
-        self.vec_not_b.reset()
-        self.vec_a_gt_b_and.reset()
 
         xor_all = self.vec_xor(A, B)  # [..., 4]
         eq_all = self.vec_not_xor(xor_all)  # [..., 4] eq[i] = NOT(XOR(A[i], B[i]))
@@ -66,21 +59,21 @@ class Comparator4Bit(nn.Module):
 
         # A > B: gt3 OR (eq3 AND gt2) OR (eq3 AND eq2 AND gt1) OR (eq3 AND eq2 AND eq1 AND gt0)
         # 树形结构 - 有依赖关系
-        eq32 = self.eq_and[0](eq3, eq2)
-        eq321 = self.eq_and[1](eq32, eq1)
+        eq32 = self.eq_and(eq3, eq2)
+        eq321 = self.eq_and(eq32, eq1)
 
-        term2 = self.result_and[0](eq3, gt2)
-        term3 = self.result_and[1](eq32, gt1)
-        term4 = self.result_and[2](eq321, gt0)
+        term2 = self.result_and(eq3, gt2)
+        term3 = self.result_and(eq32, gt1)
+        term4 = self.result_and(eq321, gt0)
 
-        t12 = self.result_or[0](gt3, term2)
-        t123 = self.result_or[1](t12, term3)
-        a_gt_b = self.result_or[2](t123, term4)
+        t12 = self.result_or(gt3, term2)
+        t123 = self.result_or(t12, term3)
+        a_gt_b = self.result_or(t123, term4)
 
         # A == B: 所有位都相等 - 树形结构
-        eq_all_1 = self.final_eq_and[0](eq3, eq2)
-        eq_all_2 = self.final_eq_and[1](eq_all_1, eq1)
-        a_eq_b = self.final_eq_and[2](eq_all_2, eq0)
+        eq_all_1 = self.final_eq_and(eq3, eq2)
+        eq_all_2 = self.final_eq_and(eq_all_1, eq1)
+        a_eq_b = self.final_eq_and(eq_all_2, eq0)
 
         return a_gt_b, a_eq_b
 
@@ -89,10 +82,10 @@ class Comparator4Bit(nn.Module):
         self.vec_not_xor.reset()
         self.vec_not_b.reset()
         self.vec_a_gt_b_and.reset()
-        for g in self.eq_and: g.reset()
-        for g in self.result_and: g.reset()
-        for g in self.result_or: g.reset()
-        for g in self.final_eq_and: g.reset()
+        self.eq_and.reset()
+        self.result_and.reset()
+        self.result_or.reset()
+        self.final_eq_and.reset()
 
 
 class Comparator3Bit(nn.Module):
@@ -105,21 +98,14 @@ class Comparator3Bit(nn.Module):
         self.vec_not_xor = NOTGate(neuron_template=nt)
         self.vec_not_b = NOTGate(neuron_template=nt)
         self.vec_a_gt_b_and = ANDGate(neuron_template=nt)
-        # 树形结构 - 有依赖
-        self.eq_and = nn.ModuleList([ANDGate(neuron_template=nt) for _ in range(2)])
-        self.result_and = nn.ModuleList([ANDGate(neuron_template=nt) for _ in range(2)])
-        self.result_or = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(2)])
-        self.final_eq_and = nn.ModuleList([ANDGate(neuron_template=nt) for _ in range(2)])
+        # 树形结构 - 单实例 (动态扩展机制支持复用)
+        self.eq_and = ANDGate(neuron_template=nt)
+        self.result_and = ANDGate(neuron_template=nt)
+        self.result_or = ORGate(neuron_template=nt)
+        self.final_eq_and = ANDGate(neuron_template=nt)
 
     def forward(self, A, B):
         """A, B: [..., 3] (MSB first)"""
-        self.reset()
-
-        # 向量化：所有3位同时处理
-        self.vec_xor.reset()
-        self.vec_not_xor.reset()
-        self.vec_not_b.reset()
-        self.vec_a_gt_b_and.reset()
 
         xor_all = self.vec_xor(A, B)  # [..., 3]
         eq_all = self.vec_not_xor(xor_all)  # [..., 3]
@@ -131,16 +117,16 @@ class Comparator3Bit(nn.Module):
         gt2, gt1, gt0 = gt_all[..., 0:1], gt_all[..., 1:2], gt_all[..., 2:3]
 
         # 树形结构 - 有依赖
-        eq21 = self.eq_and[0](eq2, eq1)
+        eq21 = self.eq_and(eq2, eq1)
 
-        term2 = self.result_and[0](eq2, gt1)
-        term3 = self.result_and[1](eq21, gt0)
+        term2 = self.result_and(eq2, gt1)
+        term3 = self.result_and(eq21, gt0)
 
-        t12 = self.result_or[0](gt2, term2)
-        a_gt_b = self.result_or[1](t12, term3)
+        t12 = self.result_or(gt2, term2)
+        a_gt_b = self.result_or(t12, term3)
 
-        a_eq_b_t = self.final_eq_and[0](eq2, eq1)
-        a_eq_b = self.final_eq_and[1](a_eq_b_t, eq0)
+        a_eq_b_t = self.final_eq_and(eq2, eq1)
+        a_eq_b = self.final_eq_and(a_eq_b_t, eq0)
 
         return a_gt_b, a_eq_b
 
@@ -149,10 +135,10 @@ class Comparator3Bit(nn.Module):
         self.vec_not_xor.reset()
         self.vec_not_b.reset()
         self.vec_a_gt_b_and.reset()
-        for g in self.eq_and: g.reset()
-        for g in self.result_and: g.reset()
-        for g in self.result_or: g.reset()
-        for g in self.final_eq_and: g.reset()
+        self.eq_and.reset()
+        self.result_and.reset()
+        self.result_or.reset()
+        self.final_eq_and.reset()
 
 
 class Subtractor4Bit(nn.Module):
@@ -160,56 +146,55 @@ class Subtractor4Bit(nn.Module):
     def __init__(self, neuron_template=None):
         super().__init__()
         nt = neuron_template
-        self.xor1 = nn.ModuleList([XORGate(neuron_template=nt) for _ in range(4)])
-        self.xor2 = nn.ModuleList([XORGate(neuron_template=nt) for _ in range(4)])
-        self.not_a = nn.ModuleList([NOTGate(neuron_template=nt) for _ in range(4)])
-        self.and1 = nn.ModuleList([ANDGate(neuron_template=nt) for _ in range(4)])
-        self.and2 = nn.ModuleList([ANDGate(neuron_template=nt) for _ in range(4)])
-        self.and3 = nn.ModuleList([ANDGate(neuron_template=nt) for _ in range(4)])
-        self.or1 = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(4)])
-        self.or2 = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(4)])
-        
+        # 单实例 (动态扩展机制支持复用)
+        self.xor1 = XORGate(neuron_template=nt)
+        self.xor2 = XORGate(neuron_template=nt)
+        self.not_a = NOTGate(neuron_template=nt)
+        self.and1 = ANDGate(neuron_template=nt)
+        self.and2 = ANDGate(neuron_template=nt)
+        self.and3 = ANDGate(neuron_template=nt)
+        self.or1 = ORGate(neuron_template=nt)
+        self.or2 = ORGate(neuron_template=nt)
+
     def forward(self, A, B, Bin=None):
         """A - B"""
-        self.reset()
-        
         if Bin is None:
             borrow = torch.zeros_like(A[..., 0:1])
         else:
             borrow = Bin
-            
+
         diffs = []
         for i in [3, 2, 1, 0]:
             a_i = A[..., i:i+1]
             b_i = B[..., i:i+1]
-            
-            t1 = self.xor1[i](a_i, b_i)
-            diff = self.xor2[i](t1, borrow)
-            
-            not_a_i = self.not_a[i](a_i)
-            term1 = self.and1[i](not_a_i, b_i)
-            term2 = self.and2[i](not_a_i, borrow)
-            term3 = self.and3[i](b_i, borrow)
-            t12 = self.or1[i](term1, term2)
-            new_borrow = self.or2[i](t12, term3)
-            
+
+            t1 = self.xor1(a_i, b_i)
+            diff = self.xor2(t1, borrow)
+
+            not_a_i = self.not_a(a_i)
+            term1 = self.and1(not_a_i, b_i)
+            term2 = self.and2(not_a_i, borrow)
+            term3 = self.and3(b_i, borrow)
+            t12 = self.or1(term1, term2)
+            new_borrow = self.or2(t12, term3)
+
             diffs.append((i, diff))
             borrow = new_borrow
-        
+
         diffs.sort(key=lambda x: x[0])
         result = torch.cat([d[1] for d in diffs], dim=-1)
-        
+
         return result, borrow
-    
+
     def reset(self):
-        for g in self.xor1: g.reset()
-        for g in self.xor2: g.reset()
-        for g in self.not_a: g.reset()
-        for g in self.and1: g.reset()
-        for g in self.and2: g.reset()
-        for g in self.and3: g.reset()
-        for g in self.or1: g.reset()
-        for g in self.or2: g.reset()
+        self.xor1.reset()
+        self.xor2.reset()
+        self.not_a.reset()
+        self.and1.reset()
+        self.and2.reset()
+        self.and3.reset()
+        self.or1.reset()
+        self.or2.reset()
 
 
 class Subtractor8Bit(nn.Module):
@@ -217,54 +202,53 @@ class Subtractor8Bit(nn.Module):
     def __init__(self, neuron_template=None):
         super().__init__()
         nt = neuron_template
-        self.xor1 = nn.ModuleList([XORGate(neuron_template=nt) for _ in range(8)])
-        self.xor2 = nn.ModuleList([XORGate(neuron_template=nt) for _ in range(8)])
-        self.not_a = nn.ModuleList([NOTGate(neuron_template=nt) for _ in range(8)])
-        self.and1 = nn.ModuleList([ANDGate(neuron_template=nt) for _ in range(8)])
-        self.and2 = nn.ModuleList([ANDGate(neuron_template=nt) for _ in range(8)])
-        self.and3 = nn.ModuleList([ANDGate(neuron_template=nt) for _ in range(8)])
-        self.or1 = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(8)])
-        self.or2 = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(8)])
-        
+        # 单实例 (动态扩展机制支持复用)
+        self.xor1 = XORGate(neuron_template=nt)
+        self.xor2 = XORGate(neuron_template=nt)
+        self.not_a = NOTGate(neuron_template=nt)
+        self.and1 = ANDGate(neuron_template=nt)
+        self.and2 = ANDGate(neuron_template=nt)
+        self.and3 = ANDGate(neuron_template=nt)
+        self.or1 = ORGate(neuron_template=nt)
+        self.or2 = ORGate(neuron_template=nt)
+
     def forward(self, A, B, Bin=None):
         """A - B"""
-        self.reset()
-        
         if Bin is None:
             borrow = torch.zeros_like(A[..., 0:1])
         else:
             borrow = Bin
-            
+
         diffs = []
         for i in [7, 6, 5, 4, 3, 2, 1, 0]:
             a_i = A[..., i:i+1]
             b_i = B[..., i:i+1]
-            
-            t1 = self.xor1[i](a_i, b_i)
-            diff = self.xor2[i](t1, borrow)
-            
-            not_a_i = self.not_a[i](a_i)
-            term1 = self.and1[i](not_a_i, b_i)
-            term2 = self.and2[i](not_a_i, borrow)
-            term3 = self.and3[i](b_i, borrow)
-            t12 = self.or1[i](term1, term2)
-            new_borrow = self.or2[i](t12, term3)
-            
+
+            t1 = self.xor1(a_i, b_i)
+            diff = self.xor2(t1, borrow)
+
+            not_a_i = self.not_a(a_i)
+            term1 = self.and1(not_a_i, b_i)
+            term2 = self.and2(not_a_i, borrow)
+            term3 = self.and3(b_i, borrow)
+            t12 = self.or1(term1, term2)
+            new_borrow = self.or2(t12, term3)
+
             diffs.append((i, diff))
             borrow = new_borrow
-        
+
         diffs.sort(key=lambda x: x[0])
         return torch.cat([d[1] for d in diffs], dim=-1), borrow
-    
+
     def reset(self):
-        for g in self.xor1: g.reset()
-        for g in self.xor2: g.reset()
-        for g in self.not_a: g.reset()
-        for g in self.and1: g.reset()
-        for g in self.and2: g.reset()
-        for g in self.and3: g.reset()
-        for g in self.or1: g.reset()
-        for g in self.or2: g.reset()
+        self.xor1.reset()
+        self.xor2.reset()
+        self.not_a.reset()
+        self.and1.reset()
+        self.and2.reset()
+        self.and3.reset()
+        self.or1.reset()
+        self.or2.reset()
 
 
 class BarrelShifterRight8(nn.Module):
@@ -280,7 +264,6 @@ class BarrelShifterRight8(nn.Module):
 
     def forward(self, X, shift):
         """X: [..., 8], shift: [..., 4]"""
-        self.reset()
 
         s0 = shift[..., 3:4]  # shift by 1
         s1 = shift[..., 2:3]  # shift by 2
@@ -294,28 +277,24 @@ class BarrelShifterRight8(nn.Module):
         # original = [X0, X1, X2, X3, X4, X5, X6, X7]
         shifted0 = torch.cat([zeros, X[..., :7]], dim=-1)
         s0_expanded = s0.expand_as(X)
-        self.vec_mux_layer0.reset()
         x0 = self.vec_mux_layer0(s0_expanded, shifted0, X)
 
         # Layer 1: shift by 2 - 向量化
         # shifted = [0, 0, x0_0, x0_1, x0_2, x0_3, x0_4, x0_5]
         shifted1 = torch.cat([zeros, zeros, x0[..., :6]], dim=-1)
         s1_expanded = s1.expand_as(x0)
-        self.vec_mux_layer1.reset()
         x1 = self.vec_mux_layer1(s1_expanded, shifted1, x0)
 
         # Layer 2: shift by 4 - 向量化
         # shifted = [0, 0, 0, 0, x1_0, x1_1, x1_2, x1_3]
         shifted2 = torch.cat([zeros, zeros, zeros, zeros, x1[..., :4]], dim=-1)
         s2_expanded = s2.expand_as(x1)
-        self.vec_mux_layer2.reset()
         x2 = self.vec_mux_layer2(s2_expanded, shifted2, x1)
 
         # Layer 3: shift by 8 - 向量化
         # shifted = [0, 0, 0, 0, 0, 0, 0, 0] (全零)
         zeros_8 = torch.zeros_like(X)
         s3_expanded = s3.expand_as(x2)
-        self.vec_mux_layer3.reset()
         result = self.vec_mux_layer3(s3_expanded, zeros_8, x2)
 
         return result
@@ -340,7 +319,6 @@ class BarrelShifterRight12(nn.Module):
 
     def forward(self, X, shift):
         """X: [..., 12], shift: [..., 4]"""
-        self.reset()
 
         s0 = shift[..., 3:4]  # shift by 1
         s1 = shift[..., 2:3]  # shift by 2
@@ -352,25 +330,21 @@ class BarrelShifterRight12(nn.Module):
         # Layer 0: shift by 1 - 向量化
         shifted0 = torch.cat([zeros, X[..., :11]], dim=-1)
         s0_expanded = s0.expand_as(X)
-        self.vec_mux_layer0.reset()
         x0 = self.vec_mux_layer0(s0_expanded, shifted0, X)
 
         # Layer 1: shift by 2 - 向量化
         shifted1 = torch.cat([zeros, zeros, x0[..., :10]], dim=-1)
         s1_expanded = s1.expand_as(x0)
-        self.vec_mux_layer1.reset()
         x1 = self.vec_mux_layer1(s1_expanded, shifted1, x0)
 
         # Layer 2: shift by 4 - 向量化
         shifted2 = torch.cat([zeros, zeros, zeros, zeros, x1[..., :8]], dim=-1)
         s2_expanded = s2.expand_as(x1)
-        self.vec_mux_layer2.reset()
         x2 = self.vec_mux_layer2(s2_expanded, shifted2, x1)
 
         # Layer 3: shift by 8 - 向量化
         shifted3 = torch.cat([zeros, zeros, zeros, zeros, zeros, zeros, zeros, zeros, x2[..., :4]], dim=-1)
         s3_expanded = s3.expand_as(x2)
-        self.vec_mux_layer3.reset()
         result = self.vec_mux_layer3(s3_expanded, shifted3, x2)
 
         return result
@@ -387,19 +361,18 @@ class Subtractor12Bit(nn.Module):
     def __init__(self, neuron_template=None):
         super().__init__()
         nt = neuron_template
-        self.xor1 = nn.ModuleList([XORGate(neuron_template=nt) for _ in range(12)])
-        self.xor2 = nn.ModuleList([XORGate(neuron_template=nt) for _ in range(12)])
-        self.not_a = nn.ModuleList([NOTGate(neuron_template=nt) for _ in range(12)])
-        self.and1 = nn.ModuleList([ANDGate(neuron_template=nt) for _ in range(12)])
-        self.and2 = nn.ModuleList([ANDGate(neuron_template=nt) for _ in range(12)])
-        self.and3 = nn.ModuleList([ANDGate(neuron_template=nt) for _ in range(12)])
-        self.or1 = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(12)])
-        self.or2 = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(12)])
-        
+        # 单实例 (动态扩展机制支持不同位宽)
+        self.xor1 = XORGate(neuron_template=nt)
+        self.xor2 = XORGate(neuron_template=nt)
+        self.not_a = NOTGate(neuron_template=nt)
+        self.and1 = ANDGate(neuron_template=nt)
+        self.and2 = ANDGate(neuron_template=nt)
+        self.and3 = ANDGate(neuron_template=nt)
+        self.or1 = ORGate(neuron_template=nt)
+        self.or2 = ORGate(neuron_template=nt)
+
     def forward(self, A, B, Bin=None):
         """A - B"""
-        self.reset()
-        
         if Bin is None:
             borrow = torch.zeros_like(A[..., 0:1])
         else:
@@ -410,15 +383,15 @@ class Subtractor12Bit(nn.Module):
             a_i = A[..., i:i+1]
             b_i = B[..., i:i+1]
             
-            t1 = self.xor1[i](a_i, b_i)
-            diff = self.xor2[i](t1, borrow)
-            
-            not_a_i = self.not_a[i](a_i)
-            term1 = self.and1[i](not_a_i, b_i)
-            term2 = self.and2[i](not_a_i, borrow)
-            term3 = self.and3[i](b_i, borrow)
-            t12 = self.or1[i](term1, term2)
-            new_borrow = self.or2[i](t12, term3)
+            t1 = self.xor1(a_i, b_i)
+            diff = self.xor2(t1, borrow)
+
+            not_a_i = self.not_a(a_i)
+            term1 = self.and1(not_a_i, b_i)
+            term2 = self.and2(not_a_i, borrow)
+            term3 = self.and3(b_i, borrow)
+            t12 = self.or1(term1, term2)
+            new_borrow = self.or2(t12, term3)
             
             diffs.append((i, diff))
             borrow = new_borrow
@@ -427,14 +400,14 @@ class Subtractor12Bit(nn.Module):
         return torch.cat([d[1] for d in diffs], dim=-1), borrow
     
     def reset(self):
-        for g in self.xor1: g.reset()
-        for g in self.xor2: g.reset()
-        for g in self.not_a: g.reset()
-        for g in self.and1: g.reset()
-        for g in self.and2: g.reset()
-        for g in self.and3: g.reset()
-        for g in self.or1: g.reset()
-        for g in self.or2: g.reset()
+        self.xor1.reset()
+        self.xor2.reset()
+        self.not_a.reset()
+        self.and1.reset()
+        self.and2.reset()
+        self.and3.reset()
+        self.or1.reset()
+        self.or2.reset()
 
 
 class Adder12Bit(nn.Module):
@@ -442,18 +415,17 @@ class Adder12Bit(nn.Module):
     def __init__(self, neuron_template=None):
         super().__init__()
         nt = neuron_template
-        self.xor1 = nn.ModuleList([XORGate(neuron_template=nt) for _ in range(12)])
-        self.xor2 = nn.ModuleList([XORGate(neuron_template=nt) for _ in range(12)])
-        self.and1 = nn.ModuleList([ANDGate(neuron_template=nt) for _ in range(12)])
-        self.and2 = nn.ModuleList([ANDGate(neuron_template=nt) for _ in range(12)])
-        self.and3 = nn.ModuleList([ANDGate(neuron_template=nt) for _ in range(12)])
-        self.or1 = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(12)])
-        self.or2 = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(12)])
-        
+        # 单实例 (动态扩展机制支持不同位宽)
+        self.xor1 = XORGate(neuron_template=nt)
+        self.xor2 = XORGate(neuron_template=nt)
+        self.and1 = ANDGate(neuron_template=nt)
+        self.and2 = ANDGate(neuron_template=nt)
+        self.and3 = ANDGate(neuron_template=nt)
+        self.or1 = ORGate(neuron_template=nt)
+        self.or2 = ORGate(neuron_template=nt)
+
     def forward(self, A, B, Cin=None):
         """A + B"""
-        self.reset()
-        
         if Cin is None:
             carry = torch.zeros_like(A[..., 0:1])
         else:
@@ -464,14 +436,14 @@ class Adder12Bit(nn.Module):
             a_i = A[..., i:i+1]
             b_i = B[..., i:i+1]
             
-            t1 = self.xor1[i](a_i, b_i)
-            s = self.xor2[i](t1, carry)
-            
-            term1 = self.and1[i](a_i, b_i)
-            term2 = self.and2[i](a_i, carry)
-            term3 = self.and3[i](b_i, carry)
-            t12 = self.or1[i](term1, term2)
-            new_carry = self.or2[i](t12, term3)
+            t1 = self.xor1(a_i, b_i)
+            s = self.xor2(t1, carry)
+
+            term1 = self.and1(a_i, b_i)
+            term2 = self.and2(a_i, carry)
+            term3 = self.and3(b_i, carry)
+            t12 = self.or1(term1, term2)
+            new_carry = self.or2(t12, term3)
             
             sums.append((i, s))
             carry = new_carry
@@ -480,13 +452,13 @@ class Adder12Bit(nn.Module):
         return torch.cat([s[1] for s in sums], dim=-1), carry
     
     def reset(self):
-        for g in self.xor1: g.reset()
-        for g in self.xor2: g.reset()
-        for g in self.and1: g.reset()
-        for g in self.and2: g.reset()
-        for g in self.and3: g.reset()
-        for g in self.or1: g.reset()
-        for g in self.or2: g.reset()
+        self.xor1.reset()
+        self.xor2.reset()
+        self.and1.reset()
+        self.and2.reset()
+        self.and3.reset()
+        self.or1.reset()
+        self.or2.reset()
 
 
 class BarrelShifterLeft8(nn.Module):
@@ -501,7 +473,6 @@ class BarrelShifterLeft8(nn.Module):
 
     def forward(self, X, shift):
         """X: [..., 8], shift: [..., 3]"""
-        self.reset()
 
         s0 = shift[..., 2:3]  # shift by 1
         s1 = shift[..., 1:2]  # shift by 2
@@ -513,21 +484,18 @@ class BarrelShifterLeft8(nn.Module):
         # shifted = [X1, X2, X3, X4, X5, X6, X7, 0]
         shifted0 = torch.cat([X[..., 1:], zeros], dim=-1)
         s0_expanded = s0.expand_as(X)
-        self.vec_mux_layer0.reset()
         x0 = self.vec_mux_layer0(s0_expanded, shifted0, X)
 
         # Layer 1: shift by 2 (left) - 向量化
         # shifted = [x0_2, x0_3, x0_4, x0_5, x0_6, x0_7, 0, 0]
         shifted1 = torch.cat([x0[..., 2:], zeros, zeros], dim=-1)
         s1_expanded = s1.expand_as(x0)
-        self.vec_mux_layer1.reset()
         x1 = self.vec_mux_layer1(s1_expanded, shifted1, x0)
 
         # Layer 2: shift by 4 (left) - 向量化
         # shifted = [x1_4, x1_5, x1_6, x1_7, 0, 0, 0, 0]
         shifted2 = torch.cat([x1[..., 4:], zeros, zeros, zeros, zeros], dim=-1)
         s2_expanded = s2.expand_as(x1)
-        self.vec_mux_layer2.reset()
         result = self.vec_mux_layer2(s2_expanded, shifted2, x1)
 
         return result
@@ -567,8 +535,6 @@ class LeadingZeroDetector8(nn.Module):
         
     def forward(self, X):
         """X: [..., 8] (MSB at 0), 返回: [..., 3] 前导零计数"""
-        self.reset()
-        
         b7, b6, b5, b4 = X[..., 0:1], X[..., 1:2], X[..., 2:3], X[..., 3:4]
         b3, b2, b1, b0 = X[..., 4:5], X[..., 5:6], X[..., 6:7], X[..., 7:8]
         
@@ -625,27 +591,26 @@ class Adder8Bit(nn.Module):
     def __init__(self, neuron_template=None):
         super().__init__()
         nt = neuron_template
-        self.adders = nn.ModuleList([FullAdder(neuron_template=nt) for _ in range(8)])
-        
+        # 单实例 (动态扩展机制支持不同位宽)
+        self.adder = FullAdder(neuron_template=nt)
+
     def forward(self, A, B, Cin=None):
         """A, B: [..., 8] (MSB first)"""
-        self.reset()
-        
         if Cin is None:
             carry = torch.zeros_like(A[..., 0:1])
         else:
             carry = Cin
-            
+
         sums = []
         for i in [7, 6, 5, 4, 3, 2, 1, 0]:
-            s, carry = self.adders[i](A[..., i:i+1], B[..., i:i+1], carry)
+            s, carry = self.adder(A[..., i:i+1], B[..., i:i+1], carry)
             sums.append((i, s))
-        
+
         sums.sort(key=lambda x: x[0])
         return torch.cat([s[1] for s in sums], dim=-1), carry
-    
+
     def reset(self):
-        for a in self.adders: a.reset()
+        self.adder.reset()
 
 
 class SpikeFP8Adder_Spatial(nn.Module):
@@ -679,8 +644,9 @@ class SpikeFP8Adder_Spatial(nn.Module):
         self.align_shifter = BarrelShifterRight12(neuron_template=nt)
 
         # ===== 零检测（树形结构 - 有依赖）=====
-        self.e_zero_or = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(6)])
-        self.e_zero_not = nn.ModuleList([NOTGate(neuron_template=nt) for _ in range(2)])
+        # 单实例 (动态扩展机制支持不同位宽)
+        self.e_zero_or = ORGate(neuron_template=nt)
+        self.e_zero_not = NOTGate(neuron_template=nt)
 
         # ===== Subnormal指数修正 - 向量化 =====
         self.vec_subnorm_exp_mux_a = MUXGate(neuron_template=nt)  # 4位
@@ -731,9 +697,10 @@ class SpikeFP8Adder_Spatial(nn.Module):
         self.vec_m_overflow_mux = MUXGate(neuron_template=nt)  # 5位: m2, m1, m0, round, sticky
 
         # ===== Sticky OR (树形结构 - 有依赖) =====
-        self.sticky_or_overflow = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(3)])
-        self.sticky_or_normal = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(2)])
-        self.sticky_extra_or = nn.ModuleList([ORGate(neuron_template=nt) for _ in range(4)])
+        # 单实例 (动态扩展机制支持不同位宽)
+        self.sticky_or_overflow = ORGate(neuron_template=nt)
+        self.sticky_or_normal = ORGate(neuron_template=nt)
+        self.sticky_extra_or = ORGate(neuron_template=nt)
         self.sticky_extra_or_norm = ORGate(neuron_template=nt)
 
         # ===== 舍入 =====
@@ -758,7 +725,6 @@ class SpikeFP8Adder_Spatial(nn.Module):
         
     def forward(self, A, B):
         """纯SNN FP8加法 - 向量化实现"""
-        self.reset()
 
         s_a, e_a, m_a_raw = A[..., 0:1], A[..., 1:5], A[..., 5:8]
         s_b, e_b, m_b_raw = B[..., 0:1], B[..., 1:5], B[..., 5:8]
@@ -769,28 +735,26 @@ class SpikeFP8Adder_Spatial(nn.Module):
         ones_4 = ones.expand_as(e_a)
 
         # ===== 隐藏位检测与指数修正 (树形结构 - 有依赖) =====
-        e_a_or_01 = self.e_zero_or[0](e_a[..., 0:1], e_a[..., 1:2])
-        e_a_or_23 = self.e_zero_or[1](e_a[..., 2:3], e_a[..., 3:4])
-        e_a_nonzero = self.e_zero_or[2](e_a_or_01, e_a_or_23)
-        e_a_is_zero = self.e_zero_not[0](e_a_nonzero)
+        e_a_or_01 = self.e_zero_or(e_a[..., 0:1], e_a[..., 1:2])
+        e_a_or_23 = self.e_zero_or(e_a[..., 2:3], e_a[..., 3:4])
+        e_a_nonzero = self.e_zero_or(e_a_or_01, e_a_or_23)
+        e_a_is_zero = self.e_zero_not(e_a_nonzero)
         hidden_a = e_a_nonzero
 
-        e_b_or_01 = self.e_zero_or[3](e_b[..., 0:1], e_b[..., 1:2])
-        e_b_or_23 = self.e_zero_or[4](e_b[..., 2:3], e_b[..., 3:4])
-        e_b_nonzero = self.e_zero_or[5](e_b_or_01, e_b_or_23)
-        e_b_is_zero = self.e_zero_not[1](e_b_nonzero)
+        e_b_or_01 = self.e_zero_or(e_b[..., 0:1], e_b[..., 1:2])
+        e_b_or_23 = self.e_zero_or(e_b[..., 2:3], e_b[..., 3:4])
+        e_b_nonzero = self.e_zero_or(e_b_or_01, e_b_or_23)
+        e_b_is_zero = self.e_zero_not(e_b_nonzero)
         hidden_b = e_b_nonzero
 
         # Subnormal指数修正 - 向量化
         # 当E=0时，使用E=1: [0,0,0,1]
         subnorm_val_a = torch.cat([zeros, zeros, zeros, ones], dim=-1)
         e_a_is_zero_4 = e_a_is_zero.expand_as(e_a)
-        self.vec_subnorm_exp_mux_a.reset()
         e_a_eff = self.vec_subnorm_exp_mux_a(e_a_is_zero_4, subnorm_val_a, e_a)
 
         subnorm_val_b = torch.cat([zeros, zeros, zeros, ones], dim=-1)
         e_b_is_zero_4 = e_b_is_zero.expand_as(e_b)
-        self.vec_subnorm_exp_mux_b.reset()
         e_b_eff = self.vec_subnorm_exp_mux_b(e_b_is_zero_4, subnorm_val_b, e_b)
 
         # 12位尾数
@@ -814,17 +778,13 @@ class SpikeFP8Adder_Spatial(nn.Module):
         diff_ba, _ = self.exp_sub_ba(e_b_eff, e_a_eff)
 
         a_ge_b_4 = a_ge_b.expand_as(diff_ab)
-        self.vec_exp_diff_mux.reset()
         exp_diff = self.vec_exp_diff_mux(a_ge_b_4, diff_ab, diff_ba)
 
         # e_max - 向量化
-        self.vec_swap_mux_e.reset()
         e_max = self.vec_swap_mux_e(a_ge_b_4, e_a_eff, e_b_eff)
 
         # ===== Step 3: 尾数对齐 - 向量化 =====
         a_ge_b_12 = a_ge_b.expand_as(m_a)
-        self.vec_swap_mux_m_large.reset()
-        self.vec_swap_mux_m_small.reset()
         m_large = self.vec_swap_mux_m_large(a_ge_b_12, m_a, m_b)
         m_small_unshifted = self.vec_swap_mux_m_small(a_ge_b_12, m_b, m_a)
 
@@ -840,10 +800,8 @@ class SpikeFP8Adder_Spatial(nn.Module):
         diff_result, _ = self.mantissa_sub(m_large, m_small)
 
         is_diff_sign_12 = is_diff_sign.expand_as(sum_result)
-        self.vec_result_mux_12.reset()
         mantissa_result_12 = self.vec_result_mux_12(is_diff_sign_12, diff_result, sum_result)
 
-        self.result_mux_carry.reset()
         result_carry = self.result_mux_carry(is_diff_sign, zeros, sum_carry)
 
         mantissa_result = mantissa_result_12[..., :8]
@@ -868,11 +826,9 @@ class SpikeFP8Adder_Spatial(nn.Module):
 
         # 选择指数 - 向量化
         is_underflow_4 = is_underflow.expand_as(e_after_norm)
-        self.vec_underflow_mux_e.reset()
         e_normal = self.vec_underflow_mux_e(is_underflow_4, zeros_4, e_after_norm)
 
         result_carry_4 = result_carry.expand_as(e_normal)
-        self.vec_exp_overflow_mux.reset()
         final_e_pre = self.vec_exp_overflow_mux(result_carry_4, e_plus_one, e_normal)
 
         # ===== Step 7: 提取尾数并舍入 =====
@@ -881,20 +837,20 @@ class SpikeFP8Adder_Spatial(nn.Module):
         m0_overflow = mantissa_result[..., 2:3]
         round_overflow = mantissa_result[..., 3:4]
         # sticky - 树形结构
-        sticky_ov_t1 = self.sticky_or_overflow[0](mantissa_result[..., 4:5], mantissa_result[..., 5:6])
-        sticky_ov_t2 = self.sticky_or_overflow[1](sticky_ov_t1, mantissa_result[..., 6:7])
-        sticky_ov_t3 = self.sticky_or_overflow[2](sticky_ov_t2, mantissa_result[..., 7:8])
-        extra_or_01 = self.sticky_extra_or[0](extra_bits[..., 0:1], extra_bits[..., 1:2])
-        extra_or_23 = self.sticky_extra_or[1](extra_bits[..., 2:3], extra_bits[..., 3:4])
-        extra_or_all = self.sticky_extra_or[2](extra_or_01, extra_or_23)
-        sticky_overflow = self.sticky_extra_or[3](sticky_ov_t3, extra_or_all)
+        sticky_ov_t1 = self.sticky_or_overflow(mantissa_result[..., 4:5], mantissa_result[..., 5:6])
+        sticky_ov_t2 = self.sticky_or_overflow(sticky_ov_t1, mantissa_result[..., 6:7])
+        sticky_ov_t3 = self.sticky_or_overflow(sticky_ov_t2, mantissa_result[..., 7:8])
+        extra_or_01 = self.sticky_extra_or(extra_bits[..., 0:1], extra_bits[..., 1:2])
+        extra_or_23 = self.sticky_extra_or(extra_bits[..., 2:3], extra_bits[..., 3:4])
+        extra_or_all = self.sticky_extra_or(extra_or_01, extra_or_23)
+        sticky_overflow = self.sticky_extra_or(sticky_ov_t3, extra_or_all)
 
         m2_norm = norm_mantissa[..., 1:2]
         m1_norm = norm_mantissa[..., 2:3]
         m0_norm = norm_mantissa[..., 3:4]
         round_norm = norm_mantissa[..., 4:5]
-        sticky_nm_t = self.sticky_or_normal[0](norm_mantissa[..., 5:6], norm_mantissa[..., 6:7])
-        sticky_nm_t2 = self.sticky_or_normal[1](sticky_nm_t, norm_mantissa[..., 7:8])
+        sticky_nm_t = self.sticky_or_normal(norm_mantissa[..., 5:6], norm_mantissa[..., 6:7])
+        sticky_nm_t2 = self.sticky_or_normal(sticky_nm_t, norm_mantissa[..., 7:8])
         sticky_norm = self.sticky_extra_or_norm(sticky_nm_t2, extra_or_all)
 
         m2_subnorm = subnorm_mantissa[..., 0:1]
@@ -905,13 +861,11 @@ class SpikeFP8Adder_Spatial(nn.Module):
         m_norm_3 = torch.cat([m2_norm, m1_norm, m0_norm], dim=-1)
         m_subnorm_3 = torch.cat([m2_subnorm, m1_subnorm, m0_subnorm], dim=-1)
         is_underflow_3 = is_underflow.expand_as(m_norm_3)
-        self.vec_underflow_mux_m.reset()
         m_normal_3 = self.vec_underflow_mux_m(is_underflow_3, m_subnorm_3, m_norm_3)
 
         m_overflow_5 = torch.cat([m2_overflow, m1_overflow, m0_overflow, round_overflow, sticky_overflow], dim=-1)
         m_normal_5 = torch.cat([m_normal_3, round_norm, sticky_norm], dim=-1)
         result_carry_5 = result_carry.expand_as(m_overflow_5)
-        self.vec_m_overflow_mux.reset()
         m_selected = self.vec_m_overflow_mux(result_carry_5, m_overflow_5, m_normal_5)
 
         m2, m1, m0 = m_selected[..., 0:1], m_selected[..., 1:2], m_selected[..., 2:3]
@@ -929,14 +883,12 @@ class SpikeFP8Adder_Spatial(nn.Module):
         not_mc = self.not_m_carry(m_carry)
         m_r_3 = torch.cat([m2_r, m1_r, m0_r], dim=-1)
         not_mc_3 = not_mc.expand_as(m_r_3)
-        self.vec_m_final_and.reset()
         m_final_3 = self.vec_m_final_and(m_r_3, not_mc_3)
         m2_final, m1_final, m0_final = m_final_3[..., 0:1], m_final_3[..., 1:2], m_final_3[..., 2:3]
 
         e_round_inc, _ = self.post_round_exp_inc(final_e_pre.flip(-1),
                                                   torch.cat([zeros, zeros, zeros, m_carry], dim=-1).flip(-1))
         m_carry_4 = m_carry.expand_as(final_e_pre)
-        self.vec_round_exp_mux.reset()
         computed_e = self.vec_round_exp_mux(m_carry_4, e_round_inc.flip(-1), final_e_pre)
 
         # ===== Step 8: 符号 =====
@@ -949,24 +901,20 @@ class SpikeFP8Adder_Spatial(nn.Module):
         cancel_s = self.cancel_mux_s(exact_cancel, zeros, computed_s)
 
         exact_cancel_4 = exact_cancel.expand_as(computed_e)
-        self.vec_cancel_mux_e.reset()
         cancel_e = self.vec_cancel_mux_e(exact_cancel_4, zeros_4, computed_e)
 
         exact_cancel_3 = exact_cancel.expand_as(m_final_3)
         zeros_3 = torch.cat([zeros, zeros, zeros], dim=-1)
-        self.vec_cancel_mux_m.reset()
         cancel_m = self.vec_cancel_mux_m(exact_cancel_3, zeros_3, m_final_3)
 
         # NaN路径选择 - 向量化
         final_s = self.nan_mux_s(is_exp_overflow, computed_s, cancel_s)
 
         is_exp_overflow_4 = is_exp_overflow.expand_as(cancel_e)
-        self.vec_nan_mux_e.reset()
         final_e = self.vec_nan_mux_e(is_exp_overflow_4, ones_4, cancel_e)
 
         ones_3 = torch.cat([ones, ones, ones], dim=-1)
         is_exp_overflow_3 = is_exp_overflow.expand_as(cancel_m)
-        self.vec_nan_mux_m.reset()
         final_m = self.vec_nan_mux_m(is_exp_overflow_3, ones_3, cancel_m)
 
         return torch.cat([final_s, final_e, final_m], dim=-1)
@@ -982,8 +930,8 @@ class SpikeFP8Adder_Spatial(nn.Module):
         self.abs_ge_and.reset()
         self.abs_ge_or.reset()
         self.align_shifter.reset()
-        for g in self.e_zero_or: g.reset()
-        for g in self.e_zero_not: g.reset()
+        self.e_zero_or.reset()
+        self.e_zero_not.reset()
         self.vec_subnorm_exp_mux_a.reset()
         self.vec_subnorm_exp_mux_b.reset()
         self.mantissa_adder.reset()
@@ -1012,9 +960,9 @@ class SpikeFP8Adder_Spatial(nn.Module):
         self.vec_nan_mux_e.reset()
         self.vec_nan_mux_m.reset()
         self.vec_m_overflow_mux.reset()
-        for g in self.sticky_or_overflow: g.reset()
-        for g in self.sticky_or_normal: g.reset()
-        for g in self.sticky_extra_or: g.reset()
+        self.sticky_or_overflow.reset()
+        self.sticky_or_normal.reset()
+        self.sticky_extra_or.reset()
         self.sticky_extra_or_norm.reset()
         self.round_or.reset()
         self.round_and.reset()

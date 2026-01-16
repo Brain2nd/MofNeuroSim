@@ -111,38 +111,82 @@ def test_tanh_bounds():
 def test_tanh_symmetry():
     """测试 Tanh 对称性: tanh(-x) = -tanh(x)"""
     from atomic_ops import SpikeFP32Tanh
-    
+
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"\n测试 Tanh 对称性 (device={device})")
     print("=" * 50)
-    
+
     tanh = SpikeFP32Tanh().to(device)
-    
+
     test_vals = [0.5, 1.0, 1.5, 2.0]
     all_pass = True
-    
+
     for val in test_vals:
         # tanh(x)
         x_pos = torch.tensor([val], dtype=torch.float32, device=device)
         x_pos_pulse = float32_to_pulse(x_pos.cpu().numpy(), device)
         tanh.reset()
         result_pos = pulse_to_float32(tanh(x_pos_pulse)).item()
-        
+
         # tanh(-x)
         x_neg = torch.tensor([-val], dtype=torch.float32, device=device)
         x_neg_pulse = float32_to_pulse(x_neg.cpu().numpy(), device)
         tanh.reset()
         result_neg = pulse_to_float32(tanh(x_neg_pulse)).item()
-        
+
         # 检查对称性
         sym_err = abs(result_pos + result_neg)
         is_symmetric = sym_err < 0.01
-        
+
         print(f"  {'✓' if is_symmetric else '✗'} tanh({val}) = {result_pos:.4f}, tanh({-val}) = {result_neg:.4f}, 差: {sym_err:.6f}")
-        
+
         all_pass = all_pass and is_symmetric
-    
+
     return all_pass
+
+
+def test_random_values():
+    """测试随机值 (CLAUDE.md #8: 随机+边界值)"""
+    from atomic_ops import SpikeFP32Tanh
+
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"\n测试随机值 (device={device})")
+    print("=" * 50)
+
+    tanh = SpikeFP32Tanh().to(device)
+
+    torch.manual_seed(42)
+    np.random.seed(42)
+
+    # 随机测试 50 个值
+    n_samples = 50
+    random_vals = np.random.randn(n_samples) * 3  # 范围 [-9, 9] 左右
+
+    passed = 0
+    for val in random_vals:
+        x = torch.tensor([val], dtype=torch.float32, device=device)
+        x_pulse = float32_to_pulse(x.cpu().numpy(), device)
+
+        tanh.reset()
+        result_pulse = tanh(x_pulse)
+        result = pulse_to_float32(result_pulse).item()
+
+        # PyTorch 参考
+        expected = torch.tanh(x).item()
+
+        # 计算相对误差
+        if abs(expected) > 1e-6:
+            rel_err = abs(result - expected) / abs(expected)
+        else:
+            rel_err = abs(result - expected)
+
+        if rel_err < 0.05:  # 5% 误差阈值
+            passed += 1
+
+    rate = passed / n_samples * 100
+    print(f"  随机测试: {passed}/{n_samples} ({rate:.1f}%)")
+
+    return rate >= 90  # 90% 通过率
 
 
 def main():
@@ -155,6 +199,7 @@ def main():
     results.append(("基本功能", test_basic_tanh()))
     results.append(("边界测试", test_tanh_bounds()))
     results.append(("对称性", test_tanh_symmetry()))
+    results.append(("随机值测试", test_random_values()))
     
     print("\n" + "=" * 60)
     print("测试结果汇总")

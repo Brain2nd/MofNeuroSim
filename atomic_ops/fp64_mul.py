@@ -45,16 +45,16 @@ class VecRippleCarryAdder108Bit(nn.Module):
         """A + B, LSB first"""
         device = A.device
         batch_shape = A.shape[:-1]
-        
+
         if Cin is None:
             carry = torch.zeros(batch_shape + (1,), device=device)
         else:
             carry = Cin
-        
+
         # 并行计算 P = A XOR B, G = A AND B
         P = self.xor1(A, B)
         G = self.and1(A, B)
-        
+
         # 进位链
         carries = [carry]
         for i in range(self.bits):
@@ -63,11 +63,11 @@ class VecRippleCarryAdder108Bit(nn.Module):
             pc = self.and2(p_i, carry)
             carry = self.or1(g_i, pc)
             carries.append(carry)
-        
+
         # 并行计算和
         all_carries = torch.cat(carries[:-1], dim=-1)
         S = self.xor2(P, all_carries)
-        
+
         return S, carries[-1]
     
     def reset(self):
@@ -175,17 +175,17 @@ class VecLeadingZeroDetector108(nn.Module):
             bit = X[..., i:i+1]
             not_found = self.vec_not(found)
             is_first = self.vec_and(bit, not_found)
-            
+
             # 位置编码
             for j in range(7):
                 pos_bit = ones if ((i >> (6-j)) & 1) else zeros
                 lzc[j] = self.vec_mux(is_first, pos_bit, lzc[j])
-            
+
             found = self.vec_or(found, is_first)
-        
+
         any_one = self.vec_or_tree(X)
         all_zero = self.vec_not(any_one)
-        
+
         # lzc = 108 = 0b1101100
         lzc_108 = [ones, ones, zeros, ones, ones, zeros, zeros]
         for j in range(7):
@@ -221,7 +221,7 @@ class VecBarrelShifterLeft108(nn.Module):
         for layer in range(self.shift_bits):
             shift_amt = 2 ** (self.shift_bits - 1 - layer)
             s_bit = shift[..., layer:layer+1]
-            
+
             # 构建移位后的张量
             if shift_amt >= self.data_bits:
                 shifted = torch.zeros_like(current)
@@ -230,8 +230,7 @@ class VecBarrelShifterLeft108(nn.Module):
                     current[..., shift_amt:],
                     zeros.expand_as(current[..., :shift_amt])
                 ], dim=-1)
-            
-            # 向量化MUX选择
+
             current = self.vec_mux(s_bit.expand_as(current), shifted, current)
         
         return current
@@ -274,25 +273,42 @@ class VecSubtractor12Bit(nn.Module):
 # ==============================================================================
 class SpikeFP64Multiplier(nn.Module):
     """FP64 乘法器 - 100%纯SNN门电路实现 (向量化版本)
-    
+
     输入: A, B: [..., 64] FP64脉冲 [S | E10..E0 | M51..M0]
     输出: [..., 64] FP64脉冲
-    
+
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
     """
     def __init__(self, neuron_template=None):
         super().__init__()
         nt = neuron_template
-        
+
         # ===== 向量化基础门电路 =====
         self.vec_and = VecAND(neuron_template=nt)
         self.vec_or = VecOR(neuron_template=nt)
         self.vec_xor = VecXOR(neuron_template=nt)
         self.vec_not = VecNOT(neuron_template=nt)
+        # VecMUX 统一实例 (动态扩展机制支持不同位宽)
         self.vec_mux = VecMUX(neuron_template=nt)
-        self.vec_or_tree = VecORTree(neuron_template=nt)
-        self.vec_and_tree = VecANDTree(neuron_template=nt)
+
+        # ===== 独立实例的 Tree (不同输入大小需要独立实例) =====
+        # 指数相关 (11-bit): e_a_all_one, e_b_all_one, exp_ge_2047
+        self.vec_and_tree_exp_a = VecANDTree(neuron_template=nt)
+        self.vec_and_tree_exp_b = VecANDTree(neuron_template=nt)
+        self.vec_and_tree_exp_overflow = VecANDTree(neuron_template=nt)
+
+        # 指数非零检测 (11-bit): e_a_any_one, e_b_any_one, exp_any_one
+        self.vec_or_tree_exp_a = VecORTree(neuron_template=nt)
+        self.vec_or_tree_exp_b = VecORTree(neuron_template=nt)
+        self.vec_or_tree_exp_final = VecORTree(neuron_template=nt)
+
+        # 尾数非零检测 (52-bit): m_a_any_one, m_b_any_one
+        self.vec_or_tree_mant_a = VecORTree(neuron_template=nt)
+        self.vec_or_tree_mant_b = VecORTree(neuron_template=nt)
+
+        # sticky位检测 (54-bit)
+        self.vec_or_tree_sticky = VecORTree(neuron_template=nt)
         
         # ===== 指数运算 =====
         self.exp_adder = VecAdder12Bit(neuron_template=nt)
@@ -316,7 +332,6 @@ class SpikeFP64Multiplier(nn.Module):
         A, B: [..., 64] FP64脉冲 [S | E10..E0 | M51..M0] MSB first
         Returns: [..., 64] FP64脉冲
         """
-        self.reset()
         A, B = torch.broadcast_tensors(A, B)
         device = A.device
         batch_shape = A.shape[:-1]
@@ -336,38 +351,38 @@ class SpikeFP64Multiplier(nn.Module):
         s_out = self.vec_xor(s_a, s_b)
         
         # ===== 3. 特殊值检测 (向量化) =====
-        e_a_all_one = self.vec_and_tree(e_a)
-        e_b_all_one = self.vec_and_tree(e_b)
-        
-        e_a_any_one = self.vec_or_tree(e_a)
-        e_b_any_one = self.vec_or_tree(e_b)
+        e_a_all_one = self.vec_and_tree_exp_a(e_a)
+        e_b_all_one = self.vec_and_tree_exp_b(e_b)
+
+        e_a_any_one = self.vec_or_tree_exp_a(e_a)
+        e_b_any_one = self.vec_or_tree_exp_b(e_b)
         e_a_is_zero = self.vec_not(e_a_any_one)
         e_b_is_zero = self.vec_not(e_b_any_one)
-        
-        m_a_any_one = self.vec_or_tree(m_a)
-        m_b_any_one = self.vec_or_tree(m_b)
+
+        m_a_any_one = self.vec_or_tree_mant_a(m_a)
+        m_b_any_one = self.vec_or_tree_mant_b(m_b)
         m_a_is_zero = self.vec_not(m_a_any_one)
         m_b_is_zero = self.vec_not(m_b_any_one)
-        
+
         # 零检测
         a_is_zero = self.vec_and(e_a_is_zero, m_a_is_zero)
         b_is_zero = self.vec_and(e_b_is_zero, m_b_is_zero)
         either_zero = self.vec_or(a_is_zero, b_is_zero)
-        
+
         # Inf检测
         a_is_inf = self.vec_and(e_a_all_one, m_a_is_zero)
         b_is_inf = self.vec_and(e_b_all_one, m_b_is_zero)
         either_inf = self.vec_or(a_is_inf, b_is_inf)
-        
+
         # NaN检测
         a_is_nan = self.vec_and(e_a_all_one, m_a_any_one)
         b_is_nan = self.vec_and(e_b_all_one, m_b_any_one)
         either_nan = self.vec_or(a_is_nan, b_is_nan)
-        
+
         # 0 × Inf = NaN
         zero_times_inf = self.vec_and(either_zero, either_inf)
         result_is_nan = self.vec_or(either_nan, zero_times_inf)
-        
+
         # Subnormal检测
         a_is_subnormal = self.vec_and(e_a_is_zero, m_a_any_one)
         b_is_subnormal = self.vec_and(e_b_is_zero, m_b_any_one)
@@ -421,7 +436,7 @@ class SpikeFP64Multiplier(nn.Module):
         round_bit = product_norm[..., 53:54]
         
         sticky_bits = product_norm[..., 54:108]
-        sticky = self.vec_or_tree(sticky_bits)
+        sticky = self.vec_or_tree_sticky(sticky_bits)
         
         # RNE舍入
         lsb = mant_norm[..., 51:52]
@@ -435,7 +450,7 @@ class SpikeFP64Multiplier(nn.Module):
         mant_rounded, _ = self.round_adder(mant_53_le, round_inc)
         
         mant_carry = mant_rounded[..., 52:53]
-        
+
         not_carry = self.vec_not(mant_carry)
         mant_final_le = self.vec_and(not_carry.expand_as(mant_rounded[..., :52]), mant_rounded[..., :52])
         mant_final = mant_final_le.flip(-1)
@@ -450,13 +465,13 @@ class SpikeFP64Multiplier(nn.Module):
         # ===== 8. 溢出/下溢检测 =====
         exp_bit11 = exp_final_pre[..., 11:12]
         not_bit11 = self.vec_not(exp_bit11)
-        
+
         exp_high_bits = exp_final_pre[..., :11]
-        exp_ge_2047 = self.vec_and_tree(exp_high_bits)
+        exp_ge_2047 = self.vec_and_tree_exp_overflow(exp_high_bits)
         is_overflow = self.vec_and(not_bit11, exp_ge_2047)
-        
+
         # 下溢检测
-        exp_any_one = self.vec_or_tree(exp_final_pre[..., :11])
+        exp_any_one = self.vec_or_tree_exp_final(exp_final_pre[..., :11])
         exp_low_zero = self.vec_not(exp_any_one)
         is_underflow = self.vec_or(exp_bit11, exp_low_zero)
         
@@ -472,25 +487,25 @@ class SpikeFP64Multiplier(nn.Module):
         # NaN
         e_out = self.vec_mux(result_is_nan.expand_as(exp_final), nan_exp, exp_final)
         m_out = self.vec_mux(result_is_nan.expand_as(mant_final), nan_mant, mant_final)
-        
+
         # Inf
         not_nan = self.vec_not(result_is_nan)
         inf_and_not_nan = self.vec_and(either_inf, not_nan)
         e_out = self.vec_mux(inf_and_not_nan.expand_as(e_out), inf_exp, e_out)
         m_out = self.vec_mux(inf_and_not_nan.expand_as(m_out), inf_mant, m_out)
-        
+
         # Zero
         not_either_inf = self.vec_not(either_inf)
         zero_and_not_nan = self.vec_and(either_zero, not_nan)
         zero_only = self.vec_and(zero_and_not_nan, not_either_inf)
         e_out = self.vec_mux(zero_only.expand_as(e_out), zero_exp, e_out)
         m_out = self.vec_mux(zero_only.expand_as(m_out), zero_mant, m_out)
-        
+
         # 溢出 -> Inf
         overflow_and_valid = self.vec_and(is_overflow, not_nan)
         e_out = self.vec_mux(overflow_and_valid.expand_as(e_out), inf_exp, e_out)
         m_out = self.vec_mux(overflow_and_valid.expand_as(m_out), inf_mant, m_out)
-        
+
         # 下溢 -> 0
         not_either_zero = self.vec_not(either_zero)
         underflow_temp = self.vec_and(is_underflow, not_nan)
@@ -509,8 +524,16 @@ class SpikeFP64Multiplier(nn.Module):
         self.vec_xor.reset()
         self.vec_not.reset()
         self.vec_mux.reset()
-        self.vec_or_tree.reset()
-        self.vec_and_tree.reset()
+        # Tree instances
+        self.vec_and_tree_exp_a.reset()
+        self.vec_and_tree_exp_b.reset()
+        self.vec_and_tree_exp_overflow.reset()
+        self.vec_or_tree_exp_a.reset()
+        self.vec_or_tree_exp_b.reset()
+        self.vec_or_tree_exp_final.reset()
+        self.vec_or_tree_mant_a.reset()
+        self.vec_or_tree_mant_b.reset()
+        self.vec_or_tree_sticky.reset()
         self.exp_adder.reset()
         self.bias_sub.reset()
         self.exp_inc.reset()

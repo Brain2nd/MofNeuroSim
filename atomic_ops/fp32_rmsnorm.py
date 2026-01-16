@@ -61,7 +61,6 @@ class SpikeFP32RMSNormFullFP64(nn.Module):
         self.weight = nn.Parameter(torch.ones(self.dim))
 
     def forward(self, x):
-        self.reset()
         device = x.device
         batch_shape = x.shape[:-2]
         

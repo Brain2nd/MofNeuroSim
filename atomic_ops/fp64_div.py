@@ -97,9 +97,33 @@ class SpikeFP64Divider(nn.Module):
         self.exp_add = VecAdder(13, neuron_template=nt)
         
         # ===== 特殊值检测 =====
-        self.exp_and_tree = VecANDTree(neuron_template=nt)  # 检测E全1
-        self.exp_or_tree = VecORTree(neuron_template=nt)    # 检测E非零
-        self.mant_or_tree = VecORTree(neuron_template=nt)   # 检测M非零
+        # 指数全1检测 (11-bit): e_a_all_one, e_b_all_one
+        self.exp_and_tree_a = VecANDTree(neuron_template=nt)
+        self.exp_and_tree_b = VecANDTree(neuron_template=nt)
+
+        # 指数非零检测 (11-bit): e_a_any, e_b_any
+        self.exp_or_tree_a = VecORTree(neuron_template=nt)
+        self.exp_or_tree_b = VecORTree(neuron_template=nt)
+
+        # 溢出检测指数高位 (2-bit)
+        self.exp_or_tree_overflow = VecORTree(neuron_template=nt)
+
+        # 下溢检测指数 (13-bit)
+        self.exp_or_tree_underflow = VecORTree(neuron_template=nt)
+
+        # 尾数非零检测 (52-bit): m_a_any, m_b_any
+        self.mant_or_tree_a = VecORTree(neuron_template=nt)
+        self.mant_or_tree_b = VecORTree(neuron_template=nt)
+
+        # 余数非零检测 (55-bit)
+        self.mant_or_tree_remainder = VecORTree(neuron_template=nt)
+
+        # sticky检测 - normal路径 (4-bit)
+        self.mant_or_tree_sticky_normal = VecORTree(neuron_template=nt)
+
+        # sticky检测 - shifted路径 (3-bit)
+        self.mant_or_tree_sticky_shifted = VecORTree(neuron_template=nt)
+
         self.not_gate = VecNOT(neuron_template=nt)
         self.and_gate = VecAND(neuron_template=nt)
         self.or_gate = VecOR(neuron_template=nt)
@@ -148,18 +172,18 @@ class SpikeFP64Divider(nn.Module):
         
         # ===== 3. 特殊值检测 (并行树结构) =====
         # 指数全1检测 (Inf/NaN)
-        e_a_all_one = self.exp_and_tree(e_a)
-        e_b_all_one = self.exp_and_tree(e_b)
-        
+        e_a_all_one = self.exp_and_tree_a(e_a)
+        e_b_all_one = self.exp_and_tree_b(e_b)
+
         # 指数非零检测
-        e_a_any = self.exp_or_tree(e_a)
-        e_b_any = self.exp_or_tree(e_b)
+        e_a_any = self.exp_or_tree_a(e_a)
+        e_b_any = self.exp_or_tree_b(e_b)
         e_a_is_zero = self.not_gate(e_a_any)
         e_b_is_zero = self.not_gate(e_b_any)
-        
+
         # 尾数非零检测
-        m_a_any = self.mant_or_tree(m_a)
-        m_b_any = self.mant_or_tree(m_b)
+        m_a_any = self.mant_or_tree_a(m_a)
+        m_b_any = self.mant_or_tree_b(m_b)
         m_a_is_zero = self.not_gate(m_a_any)
         m_b_is_zero = self.not_gate(m_b_any)
         
@@ -270,7 +294,7 @@ class SpikeFP64Divider(nn.Module):
         need_normalize = self.not_gate(q0)  # Q[0]=0 时需要归一化
         
         # 检测余数非零 (sticky)
-        remainder_nonzero = self.mant_or_tree(R)
+        remainder_nonzero = self.mant_or_tree_remainder(R)
         
         # 商Q_raw结构 (57位 MSB first):
         # 正常路径 (Q[0]=1, 商 >= 1):
@@ -290,13 +314,13 @@ class SpikeFP64Divider(nn.Module):
         mant_normal = Q_raw[..., 1:53]      # 52位尾数 MSB first
         round_normal = Q_raw[..., 53:54]    # round bit
         sticky_normal_bits = torch.cat([Q_raw[..., 54:57], remainder_nonzero], dim=-1)
-        sticky_normal = self.mant_or_tree(sticky_normal_bits)
-        
+        sticky_normal = self.mant_or_tree_sticky_normal(sticky_normal_bits)
+
         # 归一化路径 (Q[0]=0)
         mant_shifted = Q_raw[..., 2:54]     # 52位尾数 MSB first
         round_shifted = Q_raw[..., 54:55]   # round bit
         sticky_shifted_bits = torch.cat([Q_raw[..., 55:57], remainder_nonzero], dim=-1)
-        sticky_shifted = self.mant_or_tree(sticky_shifted_bits)
+        sticky_shifted = self.mant_or_tree_sticky_shifted(sticky_shifted_bits)
         
         # 选择尾数 (Q[0]=1 选 normal, Q[0]=0 选 shifted)
         sel_52 = q0.expand(batch_shape + (52,))
@@ -345,10 +369,10 @@ class SpikeFP64Divider(nn.Module):
         # ===== 8. 溢出/下溢检测 =====
         # 检测exp >= 2047 (溢出)
         exp_high_bits = exp_final_13[..., 11:13]
-        is_overflow = self.exp_or_tree(exp_high_bits)
-        
+        is_overflow = self.exp_or_tree_overflow(exp_high_bits)
+
         # 检测exp <= 0 (下溢)
-        exp_is_zero = self.not_gate(self.exp_or_tree(exp_final_13))
+        exp_is_zero = self.not_gate(self.exp_or_tree_underflow(exp_final_13))
         exp_sign = exp_final_13[..., 12:13]  # 符号位
         is_underflow = self.or_gate(exp_sign, exp_is_zero)
         
@@ -401,9 +425,18 @@ class SpikeFP64Divider(nn.Module):
         self.sign_xor.reset()
         self.exp_sub.reset()
         self.exp_add.reset()
-        self.exp_and_tree.reset()
-        self.exp_or_tree.reset()
-        self.mant_or_tree.reset()
+        # Tree instances
+        self.exp_and_tree_a.reset()
+        self.exp_and_tree_b.reset()
+        self.exp_or_tree_a.reset()
+        self.exp_or_tree_b.reset()
+        self.exp_or_tree_overflow.reset()
+        self.exp_or_tree_underflow.reset()
+        self.mant_or_tree_a.reset()
+        self.mant_or_tree_b.reset()
+        self.mant_or_tree_remainder.reset()
+        self.mant_or_tree_sticky_normal.reset()
+        self.mant_or_tree_sticky_shifted.reset()
         self.not_gate.reset()
         self.and_gate.reset()
         self.or_gate.reset()

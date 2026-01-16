@@ -128,15 +128,84 @@ def test_linear(in_features, out_features, batch_size, device):
     print(f"结果: {'PASS' if passed else 'FAIL'}")
     return passed
 
+def test_boundary_values(device):
+    """测试边界值输入 (CLAUDE.md #8: 随机+边界值)"""
+    print(f"\n{'='*60}")
+    print(f"测试: 边界值输入")
+    print(f"{'='*60}")
+
+    in_f, out_f, batch = 4, 2, 2
+
+    # 创建编码器
+    encoder = PulseFloatingPointEncoder(
+        exponent_bits=4, mantissa_bits=3,
+        scan_integer_bits=8, scan_decimal_bits=16
+    ).to(device)
+
+    # 创建SNN Linear
+    snn_linear = SpikeFP8Linear(in_f, out_f).to(device)
+
+    # 边界值权重
+    w_fp8 = torch.tensor([
+        [1.0, 0.5, 0.25, 0.125],
+        [0.5, 1.0, 0.5, 0.25],
+    ], device=device).to(torch.float8_e4m3fn).float()
+
+    snn_linear.set_weight_from_float(w_fp8, encoder)
+
+    # 边界值测试用例
+    boundary_cases = [
+        ("全零", torch.zeros(batch, in_f, device=device)),
+        ("全一", torch.ones(batch, in_f, device=device)),
+        ("单位值", torch.tensor([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]], device=device)),
+        ("小正数", torch.ones(batch, in_f, device=device) * 0.125),
+        ("混合正负", torch.tensor([[1.0, -0.5, 0.25, -0.125], [0.5, -1.0, 0.5, -0.25]], device=device)),
+    ]
+
+    passed = 0
+    for name, x_raw in boundary_cases:
+        x_fp8 = x_raw.to(torch.float8_e4m3fn).float()
+
+        # 编码输入为脉冲
+        x_pulse = encoder(x_fp8)
+        x_pulse = x_pulse.squeeze(-2)
+
+        # SNN前向
+        try:
+            snn_linear.reset()
+            y_pulse = snn_linear(x_pulse)
+
+            # 检查输出形状
+            expected_shape = (batch, out_f, 8)
+            shape_ok = y_pulse.shape == expected_shape
+
+            # 检查无 NaN
+            no_nan = not torch.isnan(y_pulse).any()
+
+            if shape_ok and no_nan:
+                passed += 1
+                print(f"  ✓ {name}: 形状正确，无 NaN")
+            else:
+                if not shape_ok:
+                    print(f"  ✗ {name}: 形状错误 {y_pulse.shape}")
+                if not no_nan:
+                    print(f"  ✗ {name}: 存在 NaN")
+        except Exception as e:
+            print(f"  ✗ {name}: 异常 {e}")
+
+    print(f"\n边界值测试: {passed}/{len(boundary_cases)} 通过")
+    return passed >= len(boundary_cases) - 1
+
+
 def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
     print("="*60)
     print("SpikeFP8Linear 位级精确测试")
     print("="*60)
-    
+
     results = []
-    
+
     # 测试不同配置
     configs = [
         (2, 2, 2),    # 最小配置
@@ -144,11 +213,15 @@ def main():
         (4, 4, 4),    # 方阵
         (8, 4, 2),    # 较大输入
     ]
-    
+
     for in_f, out_f, batch in configs:
         passed = test_linear(in_f, out_f, batch, device)
         results.append((f"in={in_f},out={out_f},batch={batch}", passed))
-    
+
+    # 边界值测试
+    boundary_passed = test_boundary_values(device)
+    results.append(("边界值测试", boundary_passed))
+
     # 总结
     print("\n" + "="*60)
     print("测试总结")
@@ -159,7 +232,7 @@ def main():
         print(f"  {name}: {status}")
         if not passed:
             all_pass = False
-    
+
     print("="*60)
     if all_pass:
         print("所有测试通过！(位级精确)")

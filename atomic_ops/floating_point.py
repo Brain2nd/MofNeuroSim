@@ -159,22 +159,26 @@ class PulseFloatingPointEncoder(nn.Module):
         self.subnormal_start_step = scan_integer_bits + 6 # N+6 (2^-7)
         
     def forward(self, x: torch.Tensor):
+        # 编码器是时序边界组件，必须在每次编码开始时重置内部时序状态
+        # 这与 SpikeMode 无关 - 这是时序扫描状态机的初始化
+        self.sign_node.reset()
+        self.binary_scanner.reset()
+        self.first_spike_detector.reset()
+        self.exp_generator.reset()
+        for d in self.delay_nodes:
+            d.reset()
+
         input_shape = x.shape
         device = x.device
-        
+
         flat_x = x.flatten().unsqueeze(1)
         n_samples = flat_x.shape[0]
         
         # 1. 符号
-        self.sign_node.reset()
         s_out = self.sign_node(flat_x)
         
         # 2. 扫描 & 时序处理
         abs_x = torch.abs(flat_x)
-        self.binary_scanner.reset()
-        self.exp_generator.reset()
-        self.first_spike_detector.reset()
-        for d in self.delay_nodes: d.reset()
         
         # 初始化寄存器
         e_reg = torch.zeros(n_samples, self.E_bits, device=device)
@@ -195,8 +199,6 @@ class PulseFloatingPointEncoder(nn.Module):
             
             # --- B. 检测首脉冲 ---
             # 使用纯 SNN 门电路: fs = s AND NOT(has_fired_accum)
-            self.not_fired.reset()
-            self.and_first_spike.reset()
             not_fired = self.not_fired(has_fired_accum)
             first_spike = self.and_first_spike(s, not_fired) 
             
@@ -213,8 +215,6 @@ class PulseFloatingPointEncoder(nn.Module):
             # 使用纯 SNN 门电路
             if t < self.subnormal_start_step:
                 # 向量化：所有指数位同时处理
-                self.vec_and_latch_e.reset()
-                self.vec_or_accum_e.reset()
                 # first_spike: [n_samples, 1] -> 广播到 [n_samples, E_bits]
                 first_spike_expanded = first_spike.expand_as(current_exp_bits)
                 bit_val = self.vec_and_latch_e(current_exp_bits, first_spike_expanded)
@@ -236,8 +236,6 @@ class PulseFloatingPointEncoder(nn.Module):
             
             # 采样：M[i] = s AND delayed_fs[i]
             # 向量化：所有尾数位同时处理
-            self.vec_and_sample_m.reset()
-            self.vec_or_accum_m.reset()
             # 堆叠延迟信号 [n_samples, M_bits]
             delayed_fs_stacked = torch.cat(current_delayed_fs, dim=-1)
             # s: [n_samples, 1] -> 广播到 [n_samples, M_bits]
@@ -364,16 +362,12 @@ class PulseFloatingPointEncoder(nn.Module):
             
             if t < self.subnormal_start_step:
                 # 使用纯 SNN OR 门更新 has_fired_accum
-                self.or_has_fired.reset()
                 has_fired_accum = self.or_has_fired(has_fired_accum, first_spike)
             
             # Subnormal 直接采样
             if t >= self.subnormal_start_step and t < self.subnormal_start_step + self.M_bits:
                 sub_idx = t - self.subnormal_start_step
                 # 只有当 Normal 没发生时，使用纯 SNN 门电路
-                self.not_for_sub.reset()
-                self.and_sub_sample.reset()
-                self.or_sub_m[sub_idx].reset()
                 not_has_fired = self.not_for_sub(has_fired_accum)
                 do_sub_sample = self.and_sub_sample(s, not_has_fired)
                 m_reg[..., sub_idx:sub_idx+1] = self.or_sub_m[sub_idx](m_reg[..., sub_idx:sub_idx+1], do_sub_sample)

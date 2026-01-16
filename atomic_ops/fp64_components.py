@@ -23,47 +23,46 @@ class Comparator11Bit(nn.Module):
         self.bits = 11
         nt = neuron_template
         
-        # 向量化门电路
+        # 向量化门电路 - 单实例 (动态扩展机制支持复用)
         self.vec_xor = VecXOR(neuron_template=nt)
         self.vec_not_xor = VecNOT(neuron_template=nt)
         self.vec_not_b = VecNOT(neuron_template=nt)
         self.vec_gt_and = VecAND(neuron_template=nt)
         self.eq_tree = VecANDTree(neuron_template=nt)
-        self.eq_prefix_and = nn.ModuleList([VecAND(neuron_template=nt) for _ in range(10)])
+        self.eq_prefix_and = VecAND(neuron_template=nt)
         self.result_and = VecAND(neuron_template=nt)
         self.result_or = VecOR(neuron_template=nt)
-        
+
     def forward(self, A, B):
         """A, B: [..., 11] (MSB first)"""
-        self.reset()
         n = self.bits
-        
+
         # 向量化计算
         xor_all = self.vec_xor(A, B)
         eq_all = self.vec_not_xor(xor_all)
         not_b_all = self.vec_not_b(B)
         gt_all = self.vec_gt_and(A, not_b_all)
-        
+
         a_eq_b = self.eq_tree(eq_all)
-        
+
         eq_prefix = eq_all[..., 0:1]
         a_gt_b = gt_all[..., 0:1]
-        
+
         for i in range(1, n):
             term = self.result_and(eq_prefix, gt_all[..., i:i+1])
             a_gt_b = self.result_or(a_gt_b, term)
             if i < n - 1:
-                eq_prefix = self.eq_prefix_and[i-1](eq_prefix, eq_all[..., i:i+1])
-        
+                eq_prefix = self.eq_prefix_and(eq_prefix, eq_all[..., i:i+1])
+
         return a_gt_b, a_eq_b
-    
+
     def reset(self):
         self.vec_xor.reset()
         self.vec_not_xor.reset()
         self.vec_not_b.reset()
         self.vec_gt_and.reset()
         self.eq_tree.reset()
-        for g in self.eq_prefix_and: g.reset()
+        self.eq_prefix_and.reset()
         self.result_and.reset()
         self.result_or.reset()
 
@@ -75,47 +74,46 @@ class Comparator53Bit(nn.Module):
         self.bits = 53
         nt = neuron_template
         
-        # 向量化门电路
+        # 向量化门电路 - 单实例 (动态扩展机制支持复用)
         self.vec_xor = VecXOR(neuron_template=nt)
         self.vec_not_xor = VecNOT(neuron_template=nt)
         self.vec_not_b = VecNOT(neuron_template=nt)
         self.vec_gt_and = VecAND(neuron_template=nt)
         self.eq_tree = VecANDTree(neuron_template=nt)
-        self.eq_prefix_and = nn.ModuleList([VecAND(neuron_template=nt) for _ in range(52)])
+        self.eq_prefix_and = VecAND(neuron_template=nt)
         self.result_and = VecAND(neuron_template=nt)
         self.result_or = VecOR(neuron_template=nt)
-        
+
     def forward(self, A, B):
         """A, B: [..., 53] (MSB first)"""
-        self.reset()
         n = self.bits
-        
+
         # 向量化计算
         xor_all = self.vec_xor(A, B)
         eq_all = self.vec_not_xor(xor_all)
         not_b_all = self.vec_not_b(B)
         gt_all = self.vec_gt_and(A, not_b_all)
-        
+
         a_eq_b = self.eq_tree(eq_all)
-        
+
         eq_prefix = eq_all[..., 0:1]
         a_gt_b = gt_all[..., 0:1]
-        
+
         for i in range(1, n):
             term = self.result_and(eq_prefix, gt_all[..., i:i+1])
             a_gt_b = self.result_or(a_gt_b, term)
             if i < n - 1:
-                eq_prefix = self.eq_prefix_and[i-1](eq_prefix, eq_all[..., i:i+1])
-        
+                eq_prefix = self.eq_prefix_and(eq_prefix, eq_all[..., i:i+1])
+
         return a_gt_b, a_eq_b
-    
+
     def reset(self):
         self.vec_xor.reset()
         self.vec_not_xor.reset()
         self.vec_not_b.reset()
         self.vec_gt_and.reset()
         self.eq_tree.reset()
-        for g in self.eq_prefix_and: g.reset()
+        self.eq_prefix_and.reset()
         self.result_and.reset()
         self.result_or.reset()
 
@@ -139,34 +137,33 @@ class Subtractor11Bit(nn.Module):
         
     def forward(self, A, B, Bin=None):
         """A - B, LSB first"""
-        self.reset()
         n = self.bits
-        
+
         if Bin is None:
             borrow = torch.zeros_like(A[..., 0:1])
         else:
             borrow = Bin
-            
+
         diffs = []
         for i in range(n):
             a_i = A[..., i:i+1]
             b_i = B[..., i:i+1]
-            
+
             t1 = self.vec_xor1(a_i, b_i)
             diff = self.vec_xor2(t1, borrow)
-            
+
             not_a_i = self.vec_not_a(a_i)
             term1 = self.vec_and1(not_a_i, b_i)
             term2 = self.vec_and2(not_a_i, borrow)
             term3 = self.vec_and3(b_i, borrow)
             t12 = self.vec_or1(term1, term2)
             new_borrow = self.vec_or2(t12, term3)
-            
+
             diffs.append(diff)
             borrow = new_borrow
-        
+
         return torch.cat(diffs, dim=-1), borrow
-    
+
     def reset(self):
         self.vec_xor1.reset()
         self.vec_xor2.reset()
@@ -187,7 +184,6 @@ class RippleCarryAdder57Bit(nn.Module):
         
     def forward(self, A, B, Cin=None):
         """A + B, LSB first"""
-        self.reset()
         result, cout = self.vec_adder(A, B)
         return result, cout
     
@@ -201,7 +197,7 @@ class Subtractor57Bit(nn.Module):
         super().__init__()
         self.bits = 57
         nt = neuron_template
-        
+
         # 向量化门电路复用
         self.vec_xor1 = VecXOR(neuron_template=nt)
         self.vec_xor2 = VecXOR(neuron_template=nt)
@@ -211,37 +207,36 @@ class Subtractor57Bit(nn.Module):
         self.vec_and3 = VecAND(neuron_template=nt)
         self.vec_or1 = VecOR(neuron_template=nt)
         self.vec_or2 = VecOR(neuron_template=nt)
-        
+
     def forward(self, A, B, Bin=None):
         """A - B, LSB first"""
-        self.reset()
         n = self.bits
-        
+
         if Bin is None:
             borrow = torch.zeros_like(A[..., 0:1])
         else:
             borrow = Bin
-            
+
         diffs = []
         for i in range(n):
             a_i = A[..., i:i+1]
             b_i = B[..., i:i+1]
-            
+
             t1 = self.vec_xor1(a_i, b_i)
             diff = self.vec_xor2(t1, borrow)
-            
+
             not_a_i = self.vec_not_a(a_i)
             term1 = self.vec_and1(not_a_i, b_i)
             term2 = self.vec_and2(not_a_i, borrow)
             term3 = self.vec_and3(b_i, borrow)
             t12 = self.vec_or1(term1, term2)
             new_borrow = self.vec_or2(t12, term3)
-            
+
             diffs.append(diff)
             borrow = new_borrow
-        
+
         return torch.cat(diffs, dim=-1), borrow
-    
+
     def reset(self):
         self.vec_xor1.reset()
         self.vec_xor2.reset()
@@ -263,20 +258,19 @@ class BarrelShifterRight57(nn.Module):
         self.data_bits = 57
         self.shift_bits = 6  # 最多移63位
         nt = neuron_template
-        
-        # 每层使用一个 VecMUX 处理所有位
-        self.vec_mux_layers = nn.ModuleList([VecMUX(neuron_template=nt) for _ in range(self.shift_bits)])
+
+        # 单实例 VecMUX (动态扩展机制支持复用)
+        self.vec_mux = VecMUX(neuron_template=nt)
             
     def forward(self, X, shift):
         """X: [..., 57], shift: [..., 6] (MSB first)"""
-        self.reset()
         zeros = torch.zeros_like(X[..., 0:1])
-        
+
         current = X
         for layer in range(self.shift_bits):
             shift_amt = 2 ** (self.shift_bits - 1 - layer)
             s_bit = shift[..., layer:layer+1]
-            
+
             # 构建移位后的版本 (并行)
             if shift_amt < self.data_bits:
                 shifted = torch.cat([
@@ -285,20 +279,19 @@ class BarrelShifterRight57(nn.Module):
                 ], dim=-1)
             else:
                 shifted = zeros.expand(*zeros.shape[:-1], self.data_bits)
-            
+
             s_bit_expanded = s_bit.expand(*s_bit.shape[:-1], self.data_bits)
-            current = self.vec_mux_layers[layer](s_bit_expanded, shifted, current)
-        
+            current = self.vec_mux(s_bit_expanded, shifted, current)
+
         return current
-    
+
     def reset(self):
-        for mux in self.vec_mux_layers:
-            mux.reset()
+        self.vec_mux.reset()
 
 
 class BarrelShifterRight57WithSticky(nn.Module):
     """57位桶形右移位器 - 向量化SNN实现 - 输出sticky bit
-    
+
     sticky = OR(所有被移出的位)
     """
     def __init__(self, neuron_template=None):
@@ -306,11 +299,11 @@ class BarrelShifterRight57WithSticky(nn.Module):
         self.data_bits = 57
         self.shift_bits = 6
         nt = neuron_template
-        
-        # 向量化门电路
-        self.vec_mux_layers = nn.ModuleList([VecMUX(neuron_template=nt) for _ in range(self.shift_bits)])
+
+        # 单实例门电路 (动态扩展机制支持复用)
+        self.vec_mux = VecMUX(neuron_template=nt)
         self.sticky_or_tree = VecORTree(neuron_template=nt)
-        self.sticky_mux = nn.ModuleList([VecMUX(neuron_template=nt) for _ in range(self.shift_bits)])
+        self.sticky_mux = VecMUX(neuron_template=nt)
         self.sticky_accum_or = VecOR(neuron_template=nt)
         
     def forward(self, X, shift):
@@ -326,18 +319,18 @@ class BarrelShifterRight57WithSticky(nn.Module):
             shift_amt = 2 ** (self.shift_bits - 1 - layer)
             s_bit = shift[..., layer:layer+1]
             
-            # 计算被移出位的 OR (使用 VecORTree 并行归约)
+            # 计算被移出位的 OR
             if shift_amt <= self.data_bits:
                 start_idx = self.data_bits - shift_amt
                 shifted_out_bits = current[..., start_idx:]
                 layer_sticky = self.sticky_or_tree(shifted_out_bits)
             else:
                 layer_sticky = zeros
-            
+
             # 如果这层移位了，累积 sticky
-            layer_sticky_selected = self.sticky_mux[layer](s_bit, layer_sticky, zeros)
+            layer_sticky_selected = self.sticky_mux(s_bit, layer_sticky, zeros)
             sticky_accum = self.sticky_accum_or(sticky_accum, layer_sticky_selected)
-            
+
             # 构建移位后的版本 (并行)
             if shift_amt < self.data_bits:
                 shifted = torch.cat([
@@ -346,16 +339,16 @@ class BarrelShifterRight57WithSticky(nn.Module):
                 ], dim=-1)
             else:
                 shifted = zeros.expand(*zeros.shape[:-1], self.data_bits)
-            
+
             s_bit_expanded = s_bit.expand(*s_bit.shape[:-1], self.data_bits)
-            current = self.vec_mux_layers[layer](s_bit_expanded, shifted, current)
-        
+            current = self.vec_mux(s_bit_expanded, shifted, current)
+
         return current, sticky_accum
-    
+
     def reset(self):
-        for mux in self.vec_mux_layers: mux.reset()
+        self.vec_mux.reset()
         self.sticky_or_tree.reset()
-        for mux in self.sticky_mux: mux.reset()
+        self.sticky_mux.reset()
         self.sticky_accum_or.reset()
 
 
@@ -366,20 +359,19 @@ class BarrelShifterLeft57(nn.Module):
         self.data_bits = 57
         self.shift_bits = 6
         nt = neuron_template
-        
-        # 向量化门电路
-        self.vec_mux_layers = nn.ModuleList([VecMUX(neuron_template=nt) for _ in range(self.shift_bits)])
+
+        # 单实例 VecMUX (动态扩展机制支持复用)
+        self.vec_mux = VecMUX(neuron_template=nt)
             
     def forward(self, X, shift):
         """X: [..., 57], shift: [..., 6] (MSB first)"""
-        self.reset()
         zeros = torch.zeros_like(X[..., 0:1])
-        
+
         current = X
         for layer in range(self.shift_bits):
             shift_amt = 2 ** (self.shift_bits - 1 - layer)
             s_bit = shift[..., layer:layer+1]
-            
+
             # 构建左移后的版本 (并行)
             if shift_amt < self.data_bits:
                 shifted = torch.cat([
@@ -388,15 +380,14 @@ class BarrelShifterLeft57(nn.Module):
                 ], dim=-1)
             else:
                 shifted = zeros.expand(*zeros.shape[:-1], self.data_bits)
-            
+
             s_bit_expanded = s_bit.expand(*s_bit.shape[:-1], self.data_bits)
-            current = self.vec_mux_layers[layer](s_bit_expanded, shifted, current)
-        
+            current = self.vec_mux(s_bit_expanded, shifted, current)
+
         return current
-    
+
     def reset(self):
-        for mux in self.vec_mux_layers:
-            mux.reset()
+        self.vec_mux.reset()
 
 
 # ==============================================================================
@@ -423,30 +414,29 @@ class LeadingZeroDetector57(nn.Module):
         
     def forward(self, X):
         """X: [..., 57] MSB first, returns: [..., 6] LZC MSB first"""
-        self.reset()
         device = X.device
         batch_shape = X.shape[:-1]
         zeros = torch.zeros(batch_shape + (1,), device=device)
-        
+
         # 初始化lzc为全0
         lzc = [zeros.clone() for _ in range(6)]
-        
+
         # found = 是否已找到第一个1
         found = zeros.clone()
-        
+
         for i in range(57):
             bit = X[..., i:i+1]
-            
+
             # 使用向量化门电路复用
             not_found = self.vec_not_found(found)
             is_first = self.vec_and_first(bit, not_found)
-            
+
             # 如果is_first=1, 累积位置到lzc
             for j in range(6):
                 pos_bit = (i >> (5 - j)) & 1
                 if pos_bit:
                     lzc[j] = self.vec_or_lzc(lzc[j], is_first)
-            
+
             # found = found OR is_first
             found = self.vec_or_found(found, is_first)
         
@@ -517,7 +507,6 @@ class FP32ToFP64Converter(nn.Module):
         Returns:
             fp64_pulse: [..., 64] FP64 脉冲 [S, E10..E0, M51..M0]
         """
-        self.reset()
         device = fp32_pulse.device
         batch_shape = fp32_pulse.shape[:-1]
         zeros = torch.zeros(batch_shape + (1,), device=device)
@@ -648,7 +637,6 @@ class FP64ToFP32Converter(nn.Module):
         Returns:
             fp32_pulse: [..., 32] FP32 脉冲 [S, E7..E0, M22..M0]
         """
-        self.reset()
         device = fp64_pulse.device
         batch_shape = fp64_pulse.shape[:-1]
         zeros = torch.zeros(batch_shape + (1,), device=device)

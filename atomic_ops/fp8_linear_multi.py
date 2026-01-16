@@ -183,7 +183,6 @@ class SpikeFP8Linear_MultiPrecision(nn.Module):
             - 'fp32': [..., out_features, 32] FP32 脉冲
         """
         assert self.weight_pulse is not None, "需要先调用 set_weight_from_float"
-        self.reset_all()  # 高层组件统一reset
 
         # 扩展输入以进行广播乘法
         # x: [..., in_features, 8] -> [..., 1, in_features, 8]

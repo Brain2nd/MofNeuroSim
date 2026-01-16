@@ -230,22 +230,48 @@ def test_arithmetic_units() -> TestResult:
 # ==============================================================================
 
 def test_encoder_decoder() -> TestResult:
-    """测试编码器和解码器"""
+    """测试编码器和解码器
+
+    测试原则 (CLAUDE.md #8):
+    - 边界值: 零、正负数、极值
+    - 随机值: 多种子随机测试
+    """
     result = TestResult("编码器/解码器测试")
-    
+
     encoder = PulseFloatingPointEncoder()
     decoder = PulseFloatingPointDecoder()
-    
-    # 测试各种数值
-    test_values = [0.0, 1.0, -1.0, 0.5, -0.5, 1.5, 2.0, 4.0, 0.25, 0.125]
-    
-    for val in test_values:
+
+    # 边界值测试
+    boundary_values = [
+        0.0,    # 零
+        -0.0,   # 负零
+        1.0,    # 单位正
+        -1.0,   # 单位负
+        0.5,    # 小数正
+        -0.5,   # 小数负
+        448.0,  # FP8 E4M3 最大值
+        -448.0, # FP8 E4M3 最小值
+        0.001953125,  # FP8 最小正常数 (2^-9)
+    ]
+
+    for val in boundary_values:
         x = torch.tensor([val]).to(torch.float8_e4m3fn).float()
         pulse = encoder(x)
         decoded = decoder(pulse)
         match = torch.isclose(decoded, x, rtol=1e-5).item()
-        result.record(f"往返({val})={decoded.item():.4f}", match)
-    
+        result.record(f"边界({val})={decoded.item():.4f}", match)
+
+    # 随机值测试
+    torch.manual_seed(42)
+    random_values = torch.randn(20).to(torch.float8_e4m3fn).float()
+    for i, val in enumerate(random_values):
+        x = val.unsqueeze(0)
+        pulse = encoder(x)
+        decoded = decoder(pulse)
+        match = torch.isclose(decoded, x, rtol=1e-5).item()
+        if i < 4:  # 只记录前4个
+            result.record(f"随机[{i}]({val.item():.4f})", match)
+
     # 测试任意维度
     shapes = [(10,), (5, 8), (2, 3, 4)]
     for shape in shapes:
@@ -255,7 +281,7 @@ def test_encoder_decoder() -> TestResult:
         expected_pulse_shape = shape + (8,)
         shape_ok = (pulse.shape == expected_pulse_shape) and (decoded.shape == x.shape)
         result.record(f"维度{shape}→{expected_pulse_shape}", shape_ok)
-    
+
     return result
 
 
@@ -264,35 +290,70 @@ def test_encoder_decoder() -> TestResult:
 # ==============================================================================
 
 def test_fp8_multiplier() -> TestResult:
-    """测试 FP8 乘法器"""
+    """测试 FP8 乘法器
+
+    测试原则 (CLAUDE.md #8):
+    - 边界值: 零、单位、负数、极值
+    - 随机值: 多种子随机测试
+    """
     result = TestResult("FP8 乘法器测试")
-    
+
     encoder = PulseFloatingPointEncoder()
     mul = SpikeFP8Multiplier()
-    
-    # 测试用例
-    test_cases = [
-        (1.0, 1.0, 1.0),
-        (2.0, 2.0, 4.0),
-        (0.5, 2.0, 1.0),
-        (-1.0, 2.0, -2.0),
-        (0.0, 5.0, 0.0),
+
+    # 边界值测试用例
+    boundary_cases = [
+        (1.0, 1.0, 1.0, "单位×单位"),
+        (0.0, 5.0, 0.0, "零×正常"),
+        (5.0, 0.0, 0.0, "正常×零"),
+        (-1.0, 2.0, -2.0, "负×正"),
+        (-2.0, -2.0, 4.0, "负×负"),
+        (0.5, 0.5, 0.25, "小数×小数"),
+        (16.0, 16.0, 256.0, "大数×大数"),
     ]
-    
-    for a, b, expected in test_cases:
+
+    for a, b, expected, desc in boundary_cases:
+        mul.reset()
         a_fp8 = torch.tensor([a]).to(torch.float8_e4m3fn).float()
         b_fp8 = torch.tensor([b]).to(torch.float8_e4m3fn).float()
         exp_fp8 = torch.tensor([expected]).to(torch.float8_e4m3fn).float()
-        
+
         a_pulse = encoder(a_fp8)
         b_pulse = encoder(b_fp8)
         result_pulse = mul(a_pulse, b_pulse)
         result_bytes = pulse_to_bytes(result_pulse)
-        
+
         expected_bytes = exp_fp8.to(torch.float8_e4m3fn).view(torch.uint8).int()
         match = (result_bytes.item() == expected_bytes.item())
-        result.record(f"{a}×{b}={expected}", match)
-    
+        result.record(f"{desc}", match)
+
+    # 随机值测试
+    torch.manual_seed(42)
+    n_random = 20
+    a_rand = torch.randn(n_random) * 2
+    b_rand = torch.randn(n_random) * 2
+
+    random_match = 0
+    for i in range(n_random):
+        mul.reset()
+        a_fp8 = torch.tensor([a_rand[i].item()]).to(torch.float8_e4m3fn).float()
+        b_fp8 = torch.tensor([b_rand[i].item()]).to(torch.float8_e4m3fn).float()
+
+        # PyTorch 参考
+        ref_fp8 = (a_fp8 * b_fp8).to(torch.float8_e4m3fn).float()
+
+        a_pulse = encoder(a_fp8)
+        b_pulse = encoder(b_fp8)
+        result_pulse = mul(a_pulse, b_pulse)
+        result_bytes = pulse_to_bytes(result_pulse)
+
+        expected_bytes = ref_fp8.to(torch.float8_e4m3fn).view(torch.uint8).int()
+        if result_bytes.item() == expected_bytes.item():
+            random_match += 1
+
+    random_rate = random_match / n_random * 100
+    result.record(f"随机({random_match}/{n_random})={random_rate:.0f}%", random_rate >= 80)
+
     return result
 
 

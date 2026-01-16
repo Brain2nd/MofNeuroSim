@@ -144,25 +144,32 @@ class SpikeFP64Sqrt(nn.Module):
         self.vec_or = VecOR(neuron_template=nt)
         self.vec_not = VecNOT(neuron_template=nt)
         self.vec_mux = VecMUX(neuron_template=nt)
-        self.vec_and_tree = VecANDTree(neuron_template=nt)
-        self.vec_or_tree = VecORTree(neuron_template=nt)
+
+        # 独立实例的 Tree (不同输入大小需要独立实例)
+        # 指数全1检测 (11-bit)
+        self.vec_and_tree_exp = VecANDTree(neuron_template=nt)
+
+        # 尾数非零检测 (52-bit)
+        self.vec_or_tree_mant = VecORTree(neuron_template=nt)
+
+        # 指数非零检测 (11-bit)
+        self.vec_or_tree_exp = VecORTree(neuron_template=nt)
         
     def forward(self, x):
-        self.reset()
         device = x.device
         batch_shape = x.shape[:-1]
         zeros = torch.zeros(batch_shape + (1,), device=device)
         ones = torch.ones(batch_shape + (1,), device=device)
-        
+
         s_x = x[..., 0:1]
         e_x = x[..., 1:12]
         m_x = x[..., 12:64]
-        
+
         # ===== 特殊值检测 (向量化) =====
-        e_all_one = self.vec_and_tree(e_x)
-        m_any = self.vec_or_tree(m_x)
+        e_all_one = self.vec_and_tree_exp(e_x)
+        m_any = self.vec_or_tree_mant(m_x)
         m_is_zero = self.vec_not(m_any)
-        e_any = self.vec_or_tree(e_x)
+        e_any = self.vec_or_tree_exp(e_x)
         e_is_zero = self.vec_not(e_any)
         
         # NaN: E=全1, M≠0
@@ -219,5 +226,7 @@ class SpikeFP64Sqrt(nn.Module):
         self.vec_or.reset()
         self.vec_not.reset()
         self.vec_mux.reset()
-        self.vec_and_tree.reset()
-        self.vec_or_tree.reset()
+        # Tree instances
+        self.vec_and_tree_exp.reset()
+        self.vec_or_tree_mant.reset()
+        self.vec_or_tree_exp.reset()

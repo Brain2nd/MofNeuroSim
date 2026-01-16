@@ -11,63 +11,38 @@ class BarrelShifterRight64(nn.Module):
     def __init__(self, neuron_template=None):
         super().__init__()
         nt = neuron_template
-        # 6层 MUX，每层处理一位 shift
-        # Layer 0: shift 1
-        # Layer 1: shift 2
-        # Layer 2: shift 4
-        # Layer 3: shift 8
-        # Layer 4: shift 16
-        # Layer 5: shift 32
-        
-        self.layers = nn.ModuleList()
-        shifts = [1, 2, 4, 8, 16, 32]
-        
-        for s in shifts:
-            layer = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(64)])
-            self.layers.append(layer)
-            
+        # 单实例 MUXGate，支持动态扩展
+        self.mux = MUXGate(neuron_template=nt)
+
     def forward(self, data, shift):
         # data: [..., 64]
-        # shift: [..., 6] (LSB first or MSB first? usually we use MSB first in pulse tensor)
-        # Let's assume shift is [s5, s4, s3, s2, s1, s0] where s0 is LSB (shift 1)
-        # But wait, our standard is usually MSB first.
-        # shift 6 bits. Max 63. 
-        # [b5, b4, b3, b2, b1, b0]
+        # shift: [..., 6] [b5, b4, b3, b2, b1, b0]
         # b5 (32), b4 (16), ..., b0 (1)
-        
+
+        batch_shape = data.shape[:-1]
+        device = data.device
         current = data
-        zeros = torch.zeros_like(data[..., 0:1])
-        
-        # Bits from LSB (b0, shift 1) to MSB (b5, shift 32)
-        # shift input is [b5, b4, b3, b2, b1, b0]
-        
+        zeros_64 = torch.zeros(batch_shape + (64,), device=device)
+
         for i in range(6):
-            s_bit = shift[..., 5-i : 6-i] # b0, b1, ... b5
+            s_bit = shift[..., 5-i : 6-i]  # b0, b1, ... b5
             shift_amount = 1 << i
-            
-            # Right Shift: new[k] = s ? old[k-shift] : old[k]
-            # Since index is 0..63, right shift means moving data to higher indices?
-            # NO. In standard array: [MSB ... LSB].
-            # Value 1000... (1) >> 1 = 0100... (0.5)
-            # So data moves to HIGHER indices.
-            
-            next_val = []
-            for k in range(64):
-                # If shift, take from k - shift_amount
-                # If k < shift_amount, fill with 0
-                if k >= shift_amount:
-                    src = current[..., k-shift_amount : k-shift_amount+1]
-                else:
-                    src = zeros
-                
-                # MUX(sel, src, default) -> if sel=1 choose src
-                # Our MUXGate: (sel, a, b) -> sel ? a : b
-                bit = self.layers[i][k](s_bit, src, current[..., k:k+1])
-                next_val.append(bit)
-            
-            current = torch.cat(next_val, dim=-1)
-            
+
+            # 向量化构造 shifted 数据
+            # Right shift: 高位填0，数据向高索引移动
+            if shift_amount < 64:
+                shifted = torch.cat([zeros_64[..., :shift_amount], current[..., :-shift_amount]], dim=-1)
+            else:
+                shifted = zeros_64
+
+            # 向量化 MUX
+            s_bit_64 = s_bit.expand(batch_shape + (64,))
+            current = self.mux(s_bit_64, shifted, current)
+
         return current
+
+    def reset(self):
+        self.mux.reset()
 
 class BarrelShifterLeft64(nn.Module):
     """64-bit 左移位器 (用于FP64结果归一化)
@@ -78,36 +53,33 @@ class BarrelShifterLeft64(nn.Module):
     def __init__(self, neuron_template=None):
         super().__init__()
         nt = neuron_template
-        self.layers = nn.ModuleList()
-        shifts = [1, 2, 4, 8, 16, 32]
-        
-        for s in shifts:
-            layer = nn.ModuleList([MUXGate(neuron_template=nt) for _ in range(64)])
-            self.layers.append(layer)
-            
+        # 单实例 MUXGate，支持动态扩展
+        self.mux = MUXGate(neuron_template=nt)
+
     def forward(self, data, shift):
         # shift: [b5, b4, b3, b2, b1, b0]
-        
+
+        batch_shape = data.shape[:-1]
+        device = data.device
         current = data
-        zeros = torch.zeros_like(data[..., 0:1])
-        
+        zeros_64 = torch.zeros(batch_shape + (64,), device=device)
+
         for i in range(6):
             s_bit = shift[..., 5-i : 6-i]
             shift_amount = 1 << i
-            
-            # Left Shift: new[k] = s ? old[k+shift] : old[k]
-            # [0, 1, 2] << 1 -> [1, 2, 0]
-            
-            next_val = []
-            for k in range(64):
-                if k + shift_amount < 64:
-                    src = current[..., k+shift_amount : k+shift_amount+1]
-                else:
-                    src = zeros
-                    
-                bit = self.layers[i][k](s_bit, src, current[..., k:k+1])
-                next_val.append(bit)
-                
-            current = torch.cat(next_val, dim=-1)
-            
+
+            # 向量化构造 shifted 数据
+            # Left shift: 低位填0，数据向低索引移动
+            if shift_amount < 64:
+                shifted = torch.cat([current[..., shift_amount:], zeros_64[..., :shift_amount]], dim=-1)
+            else:
+                shifted = zeros_64
+
+            # 向量化 MUX
+            s_bit_64 = s_bit.expand(batch_shape + (64,))
+            current = self.mux(s_bit_64, shifted, current)
+
         return current
+
+    def reset(self):
+        self.mux.reset()
