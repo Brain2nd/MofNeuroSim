@@ -30,7 +30,7 @@ from atomic_ops import (
     PulseFloatingPointDecoder,
     PulseFP32Decoder,
 )
-from atomic_ops.fp8_mul_to_fp32 import SpikeFP8MulToFP32
+from atomic_ops.arithmetic.fp8.fp8_mul_to_fp32 import SpikeFP8MulToFP32
 
 
 def test_basic_multiplication():

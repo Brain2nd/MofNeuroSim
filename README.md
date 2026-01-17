@@ -291,6 +291,36 @@ y_pulse = linear_fp32(x_pulse)  # [8, 32, 32]
 y = pulse_to_float32(y_pulse)   # [8, 32]
 ```
 
+### Transformer Model (Qwen3 Architecture)
+
+```python
+from models import SpikeQwen3ForCausalLM, SpikeQwen3Config
+from atomic_ops import pulse_to_float32
+
+# Configure model
+config = SpikeQwen3Config(
+    vocab_size=1000,
+    hidden_size=64,
+    intermediate_size=172,
+    num_hidden_layers=2,
+    num_attention_heads=4,
+    num_key_value_heads=4,
+    head_dim=16,
+)
+
+# Create 100% pure SNN model
+model = SpikeQwen3ForCausalLM(config).to('cuda')
+
+# Load weights from HuggingFace model (optional)
+# model.set_weights_from_hf_model(hf_model)
+
+# Forward pass
+input_ids = torch.randint(0, 1000, (1, 16), device='cuda')
+model.reset()  # Clear neuron states
+logits_pulse = model(input_ids)           # [1, 16, 1000, 32] pulse
+logits = pulse_to_float32(logits_pulse)   # [1, 16, 1000] float
+```
+
 ---
 
 ## 🔬 Physical Simulation with LIF Neurons
@@ -399,6 +429,10 @@ python tests/test_suite.py                    # Run all core tests
 python tests/test_suite.py --only logic_gates # Test specific category
 python tests/test_suite.py --only linear      # Test Linear layers
 
+# ★ Qwen3 Transformer end-to-end test
+python tests/test_qwen3_e2e_full.py           # Full model validation
+# Output: tests/logs/qwen3_e2e_{timestamp}.json
+
 # Core arithmetic
 python tests/test_fp8_mul.py          # FP8 multiplication
 python tests/test_fp32_adder.py       # FP32 addition
@@ -410,7 +444,6 @@ python tests/test_fp32_tanh.py        # Tanh
 python tests/test_fp32_layernorm.py   # LayerNorm
 
 # End-to-end
-python tests/test_mnist_e2e.py        # MNIST inference
 python tests/test_all_precision_alignment.py  # Full precision test
 
 # Physical simulation
@@ -425,69 +458,63 @@ python tests/test_robustness.py       # LIF robustness
 MofNeuroSim/
 ├── atomic_ops/                    # Core SNN components
 │   ├── __init__.py               # Module exports
-│   ├── converters.py             # Float ↔ Pulse utilities
 │   │
-│   ├── logic_gates.py            # IF-based logic gates
-│   ├── neurons.py                # Pure PyTorch Neurons
-│   ├── vec_logic_gates.py        # Vectorized parallel gates
+│   ├── core/                     # Foundation layer
+│   │   ├── neurons.py            # IF/LIF neuron implementations
+│   │   ├── logic_gates.py        # Basic gates (AND, OR, NOT, XOR, MUX)
+│   │   ├── vec_logic_gates.py    # Vectorized parallel gates
+│   │   ├── dynamic_if.py         # Dynamic threshold IF (for encoding)
+│   │   └── sign_bit.py           # Sign detection
 │   │
-│   ├── floating_point.py         # FP8 encoder
-│   ├── pulse_decoder.py          # Multi-precision decoders
+│   ├── encoding/                 # Float ↔ Pulse conversion
+│   │   ├── converters.py         # float32_to_pulse, pulse_to_float32, etc.
+│   │   ├── floating_point.py     # FP8 encoder
+│   │   └── pulse_decoder.py      # Multi-precision decoders
 │   │
-│   ├── fp8_mul.py                # FP8 multiplier
-│   ├── fp8_adder_spatial.py      # FP8 adder
-│   ├── fp8_linear_fast.py        # FP8 linear (fast)
-│   ├── fp8_linear_multi.py       # FP8 linear (multi-precision)
-│   ├── fp8_relu.py               # FP8/32/64 ReLU
+│   ├── arithmetic/               # Floating-point arithmetic
+│   │   ├── fp8/                  # FP8 ops (mul, adder)
+│   │   ├── fp16/                 # FP16 ops (adder, mul, converters)
+│   │   ├── fp32/                 # FP32 ops (adder, mul, div, sqrt, recip)
+│   │   └── fp64/                 # FP64 ops (adder, mul, div, sqrt)
 │   │
-│   ├── fp16_adder.py             # FP16 adder
-│   ├── fp16_components.py        # FP8↔FP16 converter
-│   ├── fp16_mul_to_fp32.py       # FP16×FP16→FP32 multiplier
-│   ├── fp16_linear.py            # FP16 linear (multi-precision)
+│   ├── activation/               # Activation functions
+│   │   ├── fp8/                  # FP8 ReLU
+│   │   ├── fp32/                 # FP32 (sigmoid, tanh, gelu, silu, softmax, exp)
+│   │   └── fp64/                 # FP64 exp
 │   │
-│   ├── fp32_adder.py             # FP32 adder
-│   ├── fp32_linear.py            # FP32 linear layer
-│   ├── fp32_mul.py               # FP32 multiplier
-│   ├── fp32_div.py               # FP32 divider
-│   ├── fp32_sqrt.py              # FP32 square root
-│   ├── fp32_exp.py               # FP32 exponential
-│   ├── fp32_recip.py             # FP32 reciprocal
-│   ├── fp32_sigmoid.py           # FP32 sigmoid
-│   ├── fp32_tanh.py              # FP32 tanh
-│   ├── fp32_gelu.py              # FP32 GELU
-│   ├── fp32_silu.py              # FP32 SiLU
-│   ├── fp32_softmax.py           # FP32 softmax
-│   ├── fp32_layernorm.py         # FP32 layer normalization
-│   ├── fp32_rmsnorm.py           # FP32 RMS normalization
-│   ├── fp32_embedding.py         # FP32 embedding layer
+│   ├── normalization/            # Normalization layers
+│   │   └── fp32/                 # LayerNorm, RMSNorm
 │   │
-│   ├── fp64_adder.py             # FP64 adder
-│   ├── fp64_mul.py               # FP64 multiplier
-│   ├── fp64_div.py               # FP64 divider
-│   ├── fp64_sqrt.py              # FP64 square root
-│   ├── fp64_exp.py               # FP64 exponential
+│   ├── linear/                   # Linear layers
+│   │   ├── fp8/                  # FP8 linear (multi-precision accum)
+│   │   ├── fp16/                 # FP16 linear
+│   │   └── fp32/                 # FP32 linear, embedding
 │   │
-│   ├── sign_bit.py               # Sign detection neuron
-│   ├── dynamic_if.py             # Dynamic threshold IF
+│   ├── attention/                # Attention mechanisms
+│   │   ├── rope.py               # Rotary Position Embedding
+│   │   └── attention.py          # Multi-head attention
 │   │
-│   ├── dual_rail_gates.py        # Dual-rail logic gates
-│   └── dual_rail/                # Dual-rail logic components
-│       └── base.py               # Base classes for dual-rail
+│   ├── trigonometry/             # Trigonometric functions
+│   │   ├── fp32/                 # FP32 sin/cos
+│   │   └── fp64/                 # FP64 sin/cos
+│   │
+│   └── dual_rail/                # Dual-rail logic (experimental)
 │
-├── models/                        # SNN inference models
-│   └── mnist_snn_infer.py        # MNIST MLP example
+├── models/                        # Complete SNN models
+│   ├── __init__.py
+│   ├── qwen3_config.py           # Qwen3 configuration
+│   ├── qwen3_mlp.py              # SwiGLU MLP (100% SNN)
+│   ├── qwen3_attention.py        # Attention with QK-Norm, RoPE, GQA
+│   ├── qwen3_decoder_layer.py    # Transformer decoder layer
+│   └── qwen3_model.py            # SpikeQwen3ForCausalLM
 │
 ├── tests/                         # Comprehensive test suite
-│   ├── test_suite.py             # ★ Core test suite (recommended)
-│   ├── test_logic_gates.py       # Gate correctness
-│   ├── test_vec_logic_gates.py   # Vectorized gates
-│   ├── test_fp8_*.py             # FP8 tests
-│   ├── test_fp16_*.py            # FP16 tests
-│   ├── test_fp32_*.py            # FP32 tests
-│   ├── test_fp64_*.py            # FP64 tests
-│   ├── test_robustness.py        # Physical simulation
-│   └── test_mnist_e2e.py         # End-to-end inference
+│   ├── test_suite.py             # ★ Core test suite
+│   ├── test_qwen3_e2e_full.py    # ★ Qwen3 end-to-end test
+│   ├── logs/                     # Test output logs (JSON)
+│   └── ...                       # Component tests
 │
+├── CLAUDE.md                      # Development guidelines
 └── README.md
 ```
 

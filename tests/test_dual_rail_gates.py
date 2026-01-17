@@ -30,7 +30,7 @@ from atomic_ops.dual_rail_gates import (
 )
 
 # 导入原始门电路（用于对比）
-from atomic_ops.logic_gates import (
+from atomic_ops.core.logic_gates import (
     NOTGate, ANDGate, ORGate, XORGate, MUXGate,
     HalfAdder, FullAdder
 )

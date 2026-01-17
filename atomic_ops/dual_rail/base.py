@@ -20,7 +20,7 @@ Pure SNN Constraints:
 import torch
 import torch.nn as nn
 from copy import deepcopy
-from ..neurons import SimpleLIFNode
+from atomic_ops.core.neurons import SimpleLIFNode
 
 class DualRailBlock(nn.Module):
     """Base class for all Dual-Rail components."""

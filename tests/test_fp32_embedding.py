@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import struct
 
-from atomic_ops.pulse_decoder import PulseFP32Decoder
+from atomic_ops.encoding.pulse_decoder import PulseFP32Decoder
 
 
 def float_to_bits(x: float) -> int:
@@ -29,7 +29,7 @@ def test_embedding_basic():
     torch.manual_seed(42)
     ann_emb = nn.Embedding(vocab_size, embed_dim).to(device)
     
-    from atomic_ops.fp32_embedding import SpikeFP32Embedding
+    from atomic_ops.linear.fp32.fp32_embedding import SpikeFP32Embedding
     snn_emb = SpikeFP32Embedding(vocab_size, embed_dim).to(device)
     snn_emb.from_nn_embedding(ann_emb)
     
@@ -72,7 +72,7 @@ def test_embedding_batch():
     torch.manual_seed(123)
     ann_emb = nn.Embedding(vocab_size, embed_dim).to(device)
     
-    from atomic_ops.fp32_embedding import SpikeFP32Embedding
+    from atomic_ops.linear.fp32.fp32_embedding import SpikeFP32Embedding
     snn_emb = SpikeFP32Embedding(vocab_size, embed_dim).to(device)
     snn_emb.from_nn_embedding(ann_emb)
     

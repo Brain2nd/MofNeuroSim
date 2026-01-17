@@ -794,6 +794,300 @@ def test_gpu():
     return True
 
 
+def compare_tensors(name, snn_tensor, ref_tensor, threshold=1e-5):
+    """比较两个张量并打印详细统计"""
+    diff = (snn_tensor - ref_tensor).abs()
+    max_diff = diff.max().item()
+    mean_diff = diff.mean().item()
+    match_rate = (diff < threshold).float().mean().item() * 100
+
+    # 相关性
+    if snn_tensor.numel() > 1:
+        snn_flat = snn_tensor.flatten()
+        ref_flat = ref_tensor.flatten()
+        correlation = torch.corrcoef(torch.stack([snn_flat, ref_flat]))[0, 1].item()
+    else:
+        correlation = 1.0 if max_diff < threshold else 0.0
+
+    print(f"  {name:25s}: max={max_diff:.2e}, mean={mean_diff:.2e}, "
+          f"match(<{threshold})={match_rate:5.1f}%, corr={correlation:.6f}")
+
+    return {
+        'name': name,
+        'max_diff': max_diff,
+        'mean_diff': mean_diff,
+        'match_rate': match_rate,
+        'correlation': correlation
+    }
+
+
+def test_attention_with_probes(device='cuda'):
+    """Attention 层探针分析 - 定位误差来源"""
+    print("\n" + "="*70)
+    print("Qwen3 Attention 探针分析 (误差来源定位)")
+    print("="*70)
+    print(f"Device: {device}")
+
+    # 配置
+    config = SpikeQwen3Config(
+        hidden_size=64,
+        num_attention_heads=4,
+        num_key_value_heads=4,
+        head_dim=16,
+        rms_norm_eps=1e-6,
+        rope_theta=10000.0
+    )
+
+    # 测试数据
+    torch.manual_seed(42)
+    batch_size = 2
+    seq_len = 8
+
+    hidden_states = torch.randn(batch_size, seq_len, config.hidden_size, device=device)
+    positions = torch.arange(seq_len, device=device)
+    attention_mask = torch.triu(torch.ones(seq_len, seq_len, device=device), diagonal=1).bool()
+
+    # 创建权重
+    q_weight = torch.randn(config.num_attention_heads * config.head_dim, config.hidden_size, device=device) * 0.1
+    k_weight = torch.randn(config.num_key_value_heads * config.head_dim, config.hidden_size, device=device) * 0.1
+    v_weight = torch.randn(config.num_key_value_heads * config.head_dim, config.hidden_size, device=device) * 0.1
+    o_weight = torch.randn(config.hidden_size, config.num_attention_heads * config.head_dim, device=device) * 0.1
+
+    # PyTorch 参考
+    ref_attn = ReferenceQwen3Attention(
+        config.hidden_size, config.num_attention_heads,
+        config.num_key_value_heads, config.head_dim, config.rms_norm_eps
+    ).to(device)
+    ref_attn.q_proj.weight.data = q_weight
+    ref_attn.k_proj.weight.data = k_weight
+    ref_attn.v_proj.weight.data = v_weight
+    ref_attn.o_proj.weight.data = o_weight
+
+    with torch.no_grad():
+        ref_output = ref_attn(hidden_states, positions, attention_mask)
+
+    # SNN 模型
+    snn_attn = SpikeQwen3Attention(config).to(device)
+    snn_attn.set_weights_from_float(q_weight, k_weight, v_weight, o_weight)
+
+    # SNN 前向传播并提取中间值
+    hidden_pulse = float32_to_pulse(hidden_states)
+    snn_attn.reset()
+
+    print("\n逐层探针分析:")
+    print("-" * 70)
+    results = []
+
+    # ========== 1. Q/K/V 投影 ==========
+    Q_pulse = snn_attn.q_proj(hidden_pulse)
+    K_pulse = snn_attn.k_proj(hidden_pulse)
+    V_pulse = snn_attn.v_proj(hidden_pulse)
+
+    Q_snn = pulse_to_float32(Q_pulse)
+    K_snn = pulse_to_float32(K_pulse)
+    V_snn = pulse_to_float32(V_pulse)
+
+    # PyTorch 参考
+    Q_ref = hidden_states @ q_weight.T
+    K_ref = hidden_states @ k_weight.T
+    V_ref = hidden_states @ v_weight.T
+
+    results.append(compare_tensors("1. Q_proj (Linear)", Q_snn, Q_ref))
+    results.append(compare_tensors("   K_proj (Linear)", K_snn, K_ref))
+    results.append(compare_tensors("   V_proj (Linear)", V_snn, V_ref))
+
+    # ========== 2. Reshape to heads ==========
+    Q_snn_heads = Q_snn.view(batch_size, seq_len, config.num_attention_heads, config.head_dim).transpose(1, 2)
+    K_snn_heads = K_snn.view(batch_size, seq_len, config.num_key_value_heads, config.head_dim).transpose(1, 2)
+    V_snn_heads = V_snn.view(batch_size, seq_len, config.num_key_value_heads, config.head_dim).transpose(1, 2)
+
+    Q_ref_heads = Q_ref.view(batch_size, seq_len, config.num_attention_heads, config.head_dim).transpose(1, 2)
+    K_ref_heads = K_ref.view(batch_size, seq_len, config.num_key_value_heads, config.head_dim).transpose(1, 2)
+
+    # ========== 3. QK Norm ==========
+    def rms_norm_ref(x, eps=1e-6):
+        variance = x.pow(2).mean(-1, keepdim=True)
+        return x * torch.rsqrt(variance + eps)
+
+    Q_norm_ref = rms_norm_ref(Q_ref_heads, config.rms_norm_eps)
+    K_norm_ref = rms_norm_ref(K_ref_heads, config.rms_norm_eps)
+
+    # SNN QK Norm
+    Q_pulse_heads = snn_attn._reshape_to_heads(Q_pulse, batch_size, seq_len, config.num_attention_heads)
+    K_pulse_heads = snn_attn._reshape_to_heads(K_pulse, batch_size, seq_len, config.num_key_value_heads)
+    Q_norm_pulse = snn_attn._apply_head_norm(Q_pulse_heads, snn_attn.q_norm)
+    K_norm_pulse = snn_attn._apply_head_norm(K_pulse_heads, snn_attn.k_norm)
+
+    Q_norm_snn = pulse_to_float32(Q_norm_pulse)
+    K_norm_snn = pulse_to_float32(K_norm_pulse)
+
+    results.append(compare_tensors("2. Q_norm (RMSNorm)", Q_norm_snn, Q_norm_ref))
+    results.append(compare_tensors("   K_norm (RMSNorm)", K_norm_snn, K_norm_ref))
+
+    # ========== 4. RoPE ==========
+    def apply_rope_ref_simple(x, positions, head_dim, base=10000.0):
+        batch_size, num_heads, seq_len, _ = x.shape
+        half_dim = head_dim // 2
+        i = torch.arange(0, half_dim, dtype=x.dtype, device=x.device)
+        theta = base ** (-2.0 * i / head_dim)
+        result = torch.zeros_like(x)
+        for pos_idx, pos in enumerate(positions):
+            angle = theta * pos.float()
+            sin_angle = torch.sin(angle)
+            cos_angle = torch.cos(angle)
+            x_pos = x[:, :, pos_idx, :]
+            x_even = x_pos[:, :, 0::2]
+            x_odd = x_pos[:, :, 1::2]
+            result_even = x_even * cos_angle - x_odd * sin_angle
+            result_odd = x_even * sin_angle + x_odd * cos_angle
+            result[:, :, pos_idx, 0::2] = result_even
+            result[:, :, pos_idx, 1::2] = result_odd
+        return result
+
+    Q_rope_ref = apply_rope_ref_simple(Q_norm_ref, positions, config.head_dim, config.rope_theta)
+    K_rope_ref = apply_rope_ref_simple(K_norm_ref, positions, config.head_dim, config.rope_theta)
+
+    Q_rope_pulse = snn_attn._apply_rope(Q_norm_pulse, positions)
+    K_rope_pulse = snn_attn._apply_rope(K_norm_pulse, positions)
+
+    Q_rope_snn = pulse_to_float32(Q_rope_pulse)
+    K_rope_snn = pulse_to_float32(K_rope_pulse)
+
+    results.append(compare_tensors("3. Q_rope (RoPE)", Q_rope_snn, Q_rope_ref))
+    results.append(compare_tensors("   K_rope (RoPE)", K_rope_snn, K_rope_ref))
+
+    # ========== 5. Attention Scores (Q @ K^T) ==========
+    scale = 1.0 / (config.head_dim ** 0.5)
+    attn_scores_ref = torch.matmul(Q_rope_ref, K_rope_ref.transpose(-2, -1)) * scale
+
+    attn_scores_pulse = snn_attn._batched_matmul_qk(Q_rope_pulse, K_rope_pulse)
+    scale_pulse = snn_attn.scale_pulse.to(device)
+    attn_scores_scaled_pulse = snn_attn.scale_mul(attn_scores_pulse, scale_pulse)
+    attn_scores_snn = pulse_to_float32(attn_scores_scaled_pulse)
+
+    results.append(compare_tensors("4. attn_scores (QK^T)", attn_scores_snn, attn_scores_ref))
+
+    # ========== 6. Mask + Softmax ==========
+    attn_scores_masked_ref = attn_scores_ref.masked_fill(attention_mask, float('-inf'))
+    attn_weights_ref = torch.softmax(attn_scores_masked_ref, dim=-1)
+
+    attn_scores_masked_pulse = snn_attn._apply_mask(attn_scores_scaled_pulse, attention_mask, device)
+    original_shape = attn_scores_masked_pulse.shape
+    attn_scores_flat = attn_scores_masked_pulse.reshape(-1, seq_len, 32)
+    attn_weights_flat = snn_attn.softmax(attn_scores_flat)
+    attn_weights_pulse = attn_weights_flat.reshape(original_shape)
+    attn_weights_snn = pulse_to_float32(attn_weights_pulse)
+
+    # 处理 NaN
+    nan_mask = torch.isnan(attn_weights_ref)
+    attn_weights_snn_clean = attn_weights_snn.clone()
+    attn_weights_snn_clean[nan_mask] = 0
+    attn_weights_ref_clean = attn_weights_ref.clone()
+    attn_weights_ref_clean[nan_mask] = 0
+
+    results.append(compare_tensors("5. attn_weights (Softmax)", attn_weights_snn_clean, attn_weights_ref_clean))
+
+    # ========== 7. Attn @ V ==========
+    attn_output_ref = torch.matmul(attn_weights_ref, V_snn_heads)  # 使用 SNN 的 V
+
+    V_pulse_heads = snn_attn._reshape_to_heads(V_pulse, batch_size, seq_len, config.num_key_value_heads)
+    attn_output_pulse = snn_attn._batched_matmul_av(attn_weights_pulse, V_pulse_heads)
+    attn_output_snn = pulse_to_float32(attn_output_pulse)
+
+    results.append(compare_tensors("6. attn_output (AV)", attn_output_snn, attn_output_ref))
+
+    # ========== 8. 完整输出 ==========
+    snn_attn.reset()
+    output_pulse = snn_attn(hidden_pulse, positions, attention_mask)
+    output_snn = pulse_to_float32(output_pulse)
+
+    results.append(compare_tensors("7. final_output (完整)", output_snn, ref_output))
+
+    # ========== 汇总 ==========
+    print("\n" + "="*70)
+    print("误差累积分析汇总")
+    print("="*70)
+
+    print(f"\n{'Layer':<30} {'Max Diff':>12} {'Match%':>10} {'Corr':>12}")
+    print("-" * 65)
+    for r in results:
+        print(f"{r['name']:<30} {r['max_diff']:>12.2e} {r['match_rate']:>9.1f}% {r['correlation']:>12.6f}")
+
+    # 找出误差最大的层
+    max_error_layer = max(results, key=lambda x: x['max_diff'])
+    print(f"\n>>> 误差最大的层: {max_error_layer['name']} (max_diff={max_error_layer['max_diff']:.2e})")
+
+    return results
+
+
+def test_mlp_with_probes(device='cuda'):
+    """MLP (SwiGLU) 探针分析"""
+    print("\n" + "="*70)
+    print("Qwen3 MLP (SwiGLU) 探针分析")
+    print("="*70)
+    print(f"Device: {device}")
+
+    hidden_size = 64
+    intermediate_size = 172
+
+    torch.manual_seed(42)
+    batch_size = 2
+    seq_len = 8
+
+    x = torch.randn(batch_size, seq_len, hidden_size, device=device)
+
+    # 权重
+    gate_weight = torch.randn(intermediate_size, hidden_size, device=device) * 0.1
+    up_weight = torch.randn(intermediate_size, hidden_size, device=device) * 0.1
+    down_weight = torch.randn(hidden_size, intermediate_size, device=device) * 0.1
+
+    print("\n逐层探针分析:")
+    print("-" * 70)
+
+    # PyTorch 参考
+    gate_ref = x @ gate_weight.T
+    gate_act_ref = gate_ref * torch.sigmoid(gate_ref)  # SiLU
+    up_ref = x @ up_weight.T
+    hidden_ref = gate_act_ref * up_ref
+    output_ref = hidden_ref @ down_weight.T
+
+    # SNN
+    snn_mlp = SpikeQwen3MLP(hidden_size, intermediate_size).to(device)
+    snn_mlp.set_weights_from_float(gate_weight, up_weight, down_weight)
+
+    x_pulse = float32_to_pulse(x)
+    snn_mlp.reset()
+
+    results = []
+
+    # 逐步执行
+    gate_pulse = snn_mlp.gate_proj(x_pulse)
+    gate_snn = pulse_to_float32(gate_pulse)
+    results.append(compare_tensors("1. gate_proj (Linear)", gate_snn, gate_ref))
+
+    gate_act_pulse = snn_mlp.act_fn(gate_pulse)
+    gate_act_snn = pulse_to_float32(gate_act_pulse)
+    results.append(compare_tensors("2. gate_silu (SiLU)", gate_act_snn, gate_act_ref))
+
+    up_pulse = snn_mlp.up_proj(x_pulse)
+    up_snn = pulse_to_float32(up_pulse)
+    results.append(compare_tensors("3. up_proj (Linear)", up_snn, up_ref))
+
+    hidden_pulse = snn_mlp.mul(gate_act_pulse, up_pulse)
+    hidden_snn = pulse_to_float32(hidden_pulse)
+    results.append(compare_tensors("4. gate * up (Mul)", hidden_snn, hidden_ref))
+
+    output_pulse = snn_mlp.down_proj(hidden_pulse)
+    output_snn = pulse_to_float32(output_pulse)
+    results.append(compare_tensors("5. down_proj (Linear)", output_snn, output_ref))
+
+    # 汇总
+    max_error_layer = max(results, key=lambda x: x['max_diff'])
+    print(f"\n>>> 误差最大的层: {max_error_layer['name']} (max_diff={max_error_layer['max_diff']:.2e})")
+
+    return results
+
+
 def run_all_tests():
     """Run all tests."""
     print("=" * 60)
@@ -838,6 +1132,46 @@ def run_all_tests():
     return failed == 0
 
 
+def run_probe_analysis():
+    """运行探针分析 (误差来源定位)"""
+    print("=" * 70)
+    print("Qwen3 SNN 探针分析 - 误差来源定位")
+    print("=" * 70)
+
+    # 检测设备
+    if torch.cuda.is_available():
+        device = 'cuda'
+        print(f"\nCUDA 可用: {torch.cuda.get_device_name(0)}")
+        print(f"显存: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+    else:
+        device = 'cpu'
+        print("\nCUDA 不可用，使用 CPU")
+
+    # 运行探针分析
+    attn_results = test_attention_with_probes(device)
+    mlp_results = test_mlp_with_probes(device)
+
+    print("\n" + "=" * 70)
+    print("探针分析完成")
+    print("=" * 70)
+
+    return attn_results, mlp_results
+
+
 if __name__ == "__main__":
-    success = run_all_tests()
-    sys.exit(0 if success else 1)
+    import argparse
+    parser = argparse.ArgumentParser(description='Qwen3 SNN Tests')
+    parser.add_argument('--probe', action='store_true', help='运行探针分析 (误差来源定位)')
+    parser.add_argument('--all', action='store_true', help='运行所有测试')
+    args = parser.parse_args()
+
+    if args.probe:
+        run_probe_analysis()
+    elif args.all:
+        run_probe_analysis()
+        print("\n")
+        success = run_all_tests()
+        sys.exit(0 if success else 1)
+    else:
+        success = run_all_tests()
+        sys.exit(0 if success else 1)

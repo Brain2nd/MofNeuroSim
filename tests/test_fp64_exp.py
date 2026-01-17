@@ -13,7 +13,7 @@ import struct
 from tqdm import tqdm
 
 from atomic_ops import SpikeFP32ExpHighPrecision
-from atomic_ops.fp32_exp import SpikeFP32Exp
+from atomic_ops.activation.fp32.fp32_exp import SpikeFP32Exp
 
 
 def float32_to_bits(f):

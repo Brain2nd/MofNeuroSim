@@ -10,9 +10,9 @@ import struct
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from atomic_ops.fp64_sqrt import SpikeFP64Sqrt
-from atomic_ops.fp32_rmsnorm import SpikeFP32RMSNormFullFP64
-from atomic_ops.fp64_components import FP32ToFP64Converter, FP64ToFP32Converter
+from atomic_ops.arithmetic.fp64.fp64_sqrt import SpikeFP64Sqrt
+from atomic_ops.normalization.fp32.fp32_rmsnorm import SpikeFP32RMSNormFullFP64
+from atomic_ops.arithmetic.fp64.fp64_components import FP32ToFP64Converter, FP64ToFP32Converter
 
 def float64_to_pulse(x):
     bits = struct.unpack('>Q', struct.pack('>d', x))[0]

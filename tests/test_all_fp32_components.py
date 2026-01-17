@@ -14,7 +14,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import time
 
-from atomic_ops.pulse_decoder import PulseFP32Decoder
+from atomic_ops.encoding.pulse_decoder import PulseFP32Decoder
 
 
 def float_to_pulse_vectorized(x: torch.Tensor) -> torch.Tensor:

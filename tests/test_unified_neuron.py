@@ -15,13 +15,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
 import torch.nn as nn
 
-from atomic_ops.logic_gates import (
+from atomic_ops.core.logic_gates import (
     ANDGate, ORGate, XORGate, NOTGate, MUXGate,
     HalfAdder, FullAdder, RippleCarryAdder,
     ORTree, ANDTree, ArrayMultiplier4x4_Strict,
     SimpleLIFNode
 )
-from atomic_ops.vec_logic_gates import (
+from atomic_ops.core.vec_logic_gates import (
     VecAND, VecOR, VecXOR, VecNOT, VecMUX,
     VecORTree, VecANDTree,
     VecAdder, VecSubtractor, VecComparator

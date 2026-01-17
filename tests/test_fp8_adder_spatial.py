@@ -7,7 +7,7 @@ import sys
 import sys; import os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
 from atomic_ops import PulseFloatingPointEncoder, SpikeFP8Adder_Spatial
-from atomic_ops.pulse_decoder import PulseFloatingPointDecoder
+from atomic_ops.encoding.pulse_decoder import PulseFloatingPointDecoder
 
 
 def test_fp8_adder_basic():

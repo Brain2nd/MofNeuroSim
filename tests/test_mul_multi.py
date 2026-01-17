@@ -22,8 +22,8 @@ from atomic_ops import (
     PulseFP32Decoder,
     SimpleLIFNode
 )
-from atomic_ops.converters import float16_to_pulse, pulse_to_float16
-from atomic_ops.pulse_decoder import PulseFP16Decoder
+from atomic_ops.encoding.converters import float16_to_pulse, pulse_to_float16
+from atomic_ops.encoding.pulse_decoder import PulseFP16Decoder
 
 
 def test_fp8_mul_output_dimensions():
@@ -117,7 +117,7 @@ def test_fp8_mul_numerical():
         result_pulse = mul(a_pulse, b_pulse)
 
         # 解码 FP8 输出
-        from atomic_ops.converters import fp8_bits_to_float
+        from atomic_ops.encoding.converters import fp8_bits_to_float
         result = fp8_bits_to_float(result_pulse.squeeze(0)).item()
 
         # 验证（允许 FP8 舍入误差）
@@ -296,7 +296,7 @@ def test_intermediate_precision_comparison():
     result_fp32 = mul_fp32(a_pulse.clone(), b_pulse.clone())
 
     # 解码
-    from atomic_ops.converters import fp8_bits_to_float
+    from atomic_ops.encoding.converters import fp8_bits_to_float
     val_fp8 = fp8_bits_to_float(result_fp8.squeeze(0)).item()
     val_fp16 = fp8_bits_to_float(result_fp16.squeeze(0)).item()
     val_fp32 = fp8_bits_to_float(result_fp32.squeeze(0)).item()

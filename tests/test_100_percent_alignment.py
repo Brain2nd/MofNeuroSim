@@ -14,7 +14,7 @@ from atomic_ops import (
     PulseFloatingPointEncoder,
     SpikeFP8Linear_MultiPrecision
 )
-from atomic_ops.pulse_decoder import (
+from atomic_ops.encoding.pulse_decoder import (
     PulseFloatingPointDecoder, PulseFP16Decoder, PulseFP32Decoder
 )
 

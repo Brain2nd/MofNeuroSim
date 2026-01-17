@@ -10,7 +10,7 @@ from atomic_ops import (
     SpikeFP8Multiplier,
     SpikeFP8Adder_Spatial,
 )
-from atomic_ops.pulse_decoder import PulseFloatingPointDecoder
+from atomic_ops.encoding.pulse_decoder import PulseFloatingPointDecoder
 
 
 def float_to_fp8_tensor(x):

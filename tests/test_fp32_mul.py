@@ -16,7 +16,7 @@ import sys
 import sys; import os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from atomic_ops import SpikeFP32Multiplier
-from atomic_ops.pulse_decoder import PulseFP32Decoder
+from atomic_ops.encoding.pulse_decoder import PulseFP32Decoder
 
 
 def float_to_fp32_bits(x):

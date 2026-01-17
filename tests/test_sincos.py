@@ -119,7 +119,7 @@ def test_constants_generation():
     """测试 FP64 常量生成"""
     print("\n--- FP64 常量生成测试 ---")
 
-    from atomic_ops.fp64_sincos import make_fp64_constant
+    from atomic_ops.trigonometry.fp64.fp64_sincos import make_fp64_constant
 
     device = torch.device('cpu')
     batch_shape = (2,)

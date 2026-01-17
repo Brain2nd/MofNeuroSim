@@ -11,7 +11,7 @@ import struct
 
 from atomic_ops import (SpikeFP32SigmoidFullFP64, SpikeFP32SiLUFullFP64,
                         SpikeFP32SoftmaxFullFP64)
-from atomic_ops.pulse_decoder import PulseFP32Decoder
+from atomic_ops.encoding.pulse_decoder import PulseFP32Decoder
 
 
 def float32_to_bits(f):

@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from atomic_ops import (SpikeFP64Adder, SpikeFP64Multiplier, SpikeFP64Exp,
                         SpikeFP64Divider)
-from atomic_ops.fp64_components import FP32ToFP64Converter, FP64ToFP32Converter
+from atomic_ops.arithmetic.fp64.fp64_components import FP32ToFP64Converter, FP64ToFP32Converter
 
 
 def float64_to_pulse(x):

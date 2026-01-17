@@ -20,7 +20,7 @@ import time
 
 def test_vec_and():
     """测试 VecAND"""
-    from atomic_ops.vec_logic_gates import VecAND
+    from atomic_ops.core.vec_logic_gates import VecAND
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     gate = VecAND().to(device)
@@ -48,7 +48,7 @@ def test_vec_and():
 
 def test_vec_or():
     """测试 VecOR"""
-    from atomic_ops.vec_logic_gates import VecOR
+    from atomic_ops.core.vec_logic_gates import VecOR
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     gate = VecOR().to(device)
@@ -76,7 +76,7 @@ def test_vec_or():
 
 def test_vec_not():
     """测试 VecNOT"""
-    from atomic_ops.vec_logic_gates import VecNOT
+    from atomic_ops.core.vec_logic_gates import VecNOT
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     gate = VecNOT().to(device)
@@ -102,7 +102,7 @@ def test_vec_not():
 
 def test_vec_xor():
     """测试 VecXOR"""
-    from atomic_ops.vec_logic_gates import VecXOR
+    from atomic_ops.core.vec_logic_gates import VecXOR
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     gate = VecXOR().to(device)
@@ -130,7 +130,7 @@ def test_vec_xor():
 
 def test_vec_mux():
     """测试 VecMUX"""
-    from atomic_ops.vec_logic_gates import VecMUX
+    from atomic_ops.core.vec_logic_gates import VecMUX
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     gate = VecMUX().to(device)
@@ -160,7 +160,7 @@ def test_vec_mux():
 
 def test_vec_or_tree():
     """测试 VecORTree"""
-    from atomic_ops.vec_logic_gates import VecORTree
+    from atomic_ops.core.vec_logic_gates import VecORTree
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     gate = VecORTree().to(device)
@@ -183,7 +183,7 @@ def test_vec_or_tree():
 
 def test_vec_and_tree():
     """测试 VecANDTree"""
-    from atomic_ops.vec_logic_gates import VecANDTree
+    from atomic_ops.core.vec_logic_gates import VecANDTree
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     gate = VecANDTree().to(device)
@@ -206,7 +206,7 @@ def test_vec_and_tree():
 
 def test_vec_adder():
     """测试 VecAdder"""
-    from atomic_ops.vec_logic_gates import VecAdder
+    from atomic_ops.core.vec_logic_gates import VecAdder
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     adder = VecAdder(8).to(device)
@@ -243,7 +243,7 @@ def test_vec_adder():
 
 def test_vec_subtractor():
     """测试 VecSubtractor"""
-    from atomic_ops.vec_logic_gates import VecSubtractor
+    from atomic_ops.core.vec_logic_gates import VecSubtractor
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     sub = VecSubtractor(8).to(device)
@@ -277,8 +277,8 @@ def test_vec_subtractor():
 
 def test_performance():
     """测试向量化性能"""
-    from atomic_ops.vec_logic_gates import VecAND, VecOR, VecXOR
-    from atomic_ops.logic_gates import ANDGate, ORGate, XORGate
+    from atomic_ops.core.vec_logic_gates import VecAND, VecOR, VecXOR
+    from atomic_ops.core.logic_gates import ANDGate, ORGate, XORGate
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     

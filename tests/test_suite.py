@@ -46,7 +46,7 @@ from atomic_ops import (
     # Linear层
     SpikeFP8Linear_MultiPrecision,
 )
-from atomic_ops.pulse_decoder import PulseFP16Decoder, PulseFP32Decoder
+from atomic_ops.encoding.pulse_decoder import PulseFP16Decoder, PulseFP32Decoder
 
 
 # ==============================================================================
@@ -414,7 +414,7 @@ def test_linear_alignment() -> TestResult:
             # SNN 计算（输出是FP32脉冲[32位]）
             x_pulse = encoder(x_fp8)
             linear = SpikeFP8Linear_MultiPrecision(
-                in_f, out_f, accum_precision='fp32', mode='sequential'
+                in_f, out_f, accum_precision='fp32'
             ).to(device)
             linear.set_weight_from_float(w_fp8, encoder)
             linear.reset()
@@ -478,7 +478,7 @@ def test_linear_alignment() -> TestResult:
             # SNN 计算（输出是FP16脉冲[16位]）
             x_pulse = encoder(x_fp8)
             linear = SpikeFP8Linear_MultiPrecision(
-                in_f, out_f, accum_precision='fp16', mode='sequential'
+                in_f, out_f, accum_precision='fp16'
             ).to(device)
             linear.set_weight_from_float(w_fp8, encoder)
             linear.reset()
@@ -513,7 +513,7 @@ def test_linear_alignment() -> TestResult:
             # SNN 计算（FP8中间精度，累加误差较大）
             x_pulse = encoder(x_fp8)
             linear = SpikeFP8Linear_MultiPrecision(
-                in_f, out_f, accum_precision='fp8', mode='sequential'
+                in_f, out_f, accum_precision='fp8'
             ).to(device)
             linear.set_weight_from_float(w_fp8, encoder)
             linear.reset()

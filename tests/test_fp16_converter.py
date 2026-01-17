@@ -12,8 +12,8 @@ import sys
 import sys; import os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from atomic_ops import PulseFloatingPointEncoder
-from atomic_ops.fp16_components import FP8ToFP16Converter, FP16ToFP8Converter
-from atomic_ops.pulse_decoder import PulseFP16Decoder, PulseFloatingPointDecoder
+from atomic_ops.arithmetic.fp16.fp16_components import FP8ToFP16Converter, FP16ToFP8Converter
+from atomic_ops.encoding.pulse_decoder import PulseFP16Decoder, PulseFloatingPointDecoder
 
 
 def test_fp8_to_fp16():

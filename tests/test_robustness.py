@@ -62,7 +62,7 @@ import torch
 import numpy as np
 
 # 使用统一架构 - neuron_template
-from atomic_ops.logic_gates import (
+from atomic_ops.core.logic_gates import (
     ANDGate, ORGate, XORGate, NOTGate,
     HalfAdder, FullAdder, RippleCarryAdder,
     ArrayMultiplier4x4_Strict, SimpleLIFNode
@@ -389,7 +389,7 @@ def test_barrel_shifter_noise_scan(device):
     print("实验2.6: σ扫描 - 输入噪声对Barrel Shifter的影响 (neuron_template)")
     print("="*70)
     
-    from atomic_ops.logic_gates import BarrelShifter8
+    from atomic_ops.core.logic_gates import BarrelShifter8
     
     sigmas = [0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3]
     num_tests = 50
@@ -460,8 +460,8 @@ def test_fp8_adder_noise(device):
     print("实验2.7: σ扫描 - 输入噪声对FP8加法器的影响 (端到端)")
     print("="*70)
     
-    from atomic_ops.floating_point import PulseFloatingPointEncoder
-    from atomic_ops.pulse_decoder import PulseFloatingPointDecoder
+    from atomic_ops.encoding.floating_point import PulseFloatingPointEncoder
+    from atomic_ops.encoding.pulse_decoder import PulseFloatingPointDecoder
     
     sigmas = [0.0, 0.01, 0.02, 0.05, 0.1, 0.15]
     num_tests = 100
@@ -552,8 +552,8 @@ def test_fp8_multiplier_noise(device):
     print("实验2.8: σ扫描 - 输入噪声对FP8乘法器的影响 (端到端)")
     print("="*70)
     
-    from atomic_ops.floating_point import PulseFloatingPointEncoder
-    from atomic_ops.pulse_decoder import PulseFloatingPointDecoder
+    from atomic_ops.encoding.floating_point import PulseFloatingPointEncoder
+    from atomic_ops.encoding.pulse_decoder import PulseFloatingPointDecoder
     
     sigmas = [0.0, 0.01, 0.02, 0.05, 0.1, 0.15]
     num_tests = 100
@@ -687,7 +687,7 @@ def test_fp16_adder_noise(device):
     print("实验2.9: σ扫描 - 输入噪声对FP16加法器的影响 (端到端)")
     print("="*70)
     
-    from atomic_ops.pulse_decoder import PulseFP16Decoder
+    from atomic_ops.encoding.pulse_decoder import PulseFP16Decoder
     
     sigmas = [0.0, 0.01, 0.02, 0.05, 0.1, 0.15]  # 统一范围
     num_tests = 50
@@ -774,7 +774,7 @@ def test_fp32_adder_noise(device):
     print("实验2.10: σ扫描 - 输入噪声对FP32加法器的影响 (端到端)")
     print("="*70)
     
-    from atomic_ops.pulse_decoder import PulseFP32Decoder
+    from atomic_ops.encoding.pulse_decoder import PulseFP32Decoder
     
     sigmas = [0.0, 0.01, 0.02, 0.05, 0.1, 0.15]  # 统一范围
     num_tests = 30
@@ -918,7 +918,7 @@ def test_linear_noise(device):
     print("="*70)
     
     from atomic_ops import PulseFloatingPointEncoder, SpikeFP8Linear_MultiPrecision
-    from atomic_ops.pulse_decoder import PulseFloatingPointDecoder, PulseFP16Decoder, PulseFP32Decoder
+    from atomic_ops.encoding.pulse_decoder import PulseFloatingPointDecoder, PulseFP16Decoder, PulseFP32Decoder
     
     sigmas = [0.0, 0.01, 0.02, 0.05, 0.1, 0.15]
     in_f, out_f, batch = 8, 4, 20
@@ -1019,8 +1019,8 @@ def test_fp8_mul_to_fp32_noise(device):
     print("="*70)
     
     from atomic_ops import PulseFloatingPointEncoder
-    from atomic_ops.fp8_mul_to_fp32 import SpikeFP8MulToFP32
-    from atomic_ops.pulse_decoder import PulseFP32Decoder
+    from atomic_ops.arithmetic.fp8.fp8_mul_to_fp32 import SpikeFP8MulToFP32
+    from atomic_ops.encoding.pulse_decoder import PulseFP32Decoder
     
     sigmas = [0.0, 0.01, 0.02, 0.05, 0.1, 0.15]
     num_tests = 50
@@ -1058,7 +1058,7 @@ def test_fp8_mul_to_fp32_noise(device):
             snn_result = decoder(result_pulse).item()
             
             # 参考：用量化后的输入计算
-            from atomic_ops.pulse_decoder import PulseFloatingPointDecoder
+            from atomic_ops.encoding.pulse_decoder import PulseFloatingPointDecoder
             dec_fp8 = PulseFloatingPointDecoder().to(device)
             a_decoded = dec_fp8(a_q).item()
             b_decoded = dec_fp8(b_q).item()
@@ -1217,9 +1217,9 @@ def test_converters_noise(device):
     print("="*70)
     
     from atomic_ops import PulseFloatingPointEncoder
-    from atomic_ops.fp16_components import FP8ToFP16Converter
-    from atomic_ops.fp32_components import FP8ToFP32Converter, FP32ToFP16Converter
-    from atomic_ops.pulse_decoder import PulseFloatingPointDecoder, PulseFP16Decoder, PulseFP32Decoder
+    from atomic_ops.arithmetic.fp16.fp16_components import FP8ToFP16Converter
+    from atomic_ops.arithmetic.fp32.fp32_components import FP8ToFP32Converter, FP32ToFP16Converter
+    from atomic_ops.encoding.pulse_decoder import PulseFloatingPointDecoder, PulseFP16Decoder, PulseFP32Decoder
     
     sigmas = [0.0, 0.01, 0.02, 0.05, 0.1, 0.15]
     num_tests = 50

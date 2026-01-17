@@ -132,7 +132,7 @@ def test_sign_bit_logic():
 
 def test_snn_principle_compliance():
     """测试 SNN 原则合规性 - 验证模块结构"""
-    from atomic_ops.fp8_relu import SpikeFP8ReLU
+    from atomic_ops.activation.fp8.fp8_relu import SpikeFP8ReLU
     
     # 检查模块是否使用了正确的组件
     relu = SpikeFP8ReLU()

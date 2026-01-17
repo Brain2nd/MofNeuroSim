@@ -13,7 +13,7 @@ from atomic_ops import (
     SpikeFP8Multiplier,
     SpikeFP8Linear_MultiPrecision
 )
-from atomic_ops.pulse_decoder import PulseFloatingPointDecoder, PulseFP32Decoder
+from atomic_ops.encoding.pulse_decoder import PulseFloatingPointDecoder, PulseFP32Decoder
 
 
 def main():

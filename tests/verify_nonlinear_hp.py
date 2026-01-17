@@ -10,10 +10,10 @@ import struct
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from atomic_ops.fp64_exp import (SpikeFP32SigmoidFullFP64, 
+from atomic_ops.activation.fp64.fp64_exp import (SpikeFP32SigmoidFullFP64, 
                                  SpikeFP32SiLUFullFP64, 
                                  SpikeFP32SoftmaxFullFP64)
-from atomic_ops.pulse_decoder import PulseFP32Decoder
+from atomic_ops.encoding.pulse_decoder import PulseFP32Decoder
 
 def float32_to_pulse(x):
     """将float32转换为32位脉冲表示 (MSB first)"""

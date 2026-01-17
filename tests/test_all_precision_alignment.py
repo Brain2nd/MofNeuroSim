@@ -20,7 +20,7 @@ from atomic_ops import (
     PulseFloatingPointEncoder,
     SpikeFP8Linear_MultiPrecision
 )
-from atomic_ops.pulse_decoder import (
+from atomic_ops.encoding.pulse_decoder import (
     PulseFloatingPointDecoder, PulseFP16Decoder, PulseFP32Decoder
 )
 
@@ -107,9 +107,8 @@ def test_fp8_accumulate_alignment():
         encoder.reset()
         x_pulse = encoder(x_fp8_f32)
         snn = SpikeFP8Linear_MultiPrecision(
-            in_f, out_f, 
-            accum_precision='fp8', 
-            mode='sequential'
+            in_f, out_f,
+            accum_precision='fp8'
         ).to(device)
         snn.set_weight_from_float(w_fp8_f32, encoder)
         snn.reset()
@@ -177,9 +176,8 @@ def test_fp16_accumulate_alignment():
         encoder.reset()
         x_pulse = encoder(x_fp8_f32)
         snn = SpikeFP8Linear_MultiPrecision(
-            in_f, out_f, 
-            accum_precision='fp16', 
-            mode='sequential'
+            in_f, out_f,
+            accum_precision='fp16'
         ).to(device)
         snn.set_weight_from_float(w_fp8_f32, encoder)
         snn.reset()
@@ -246,9 +244,8 @@ def test_fp32_accumulate_alignment():
         encoder.reset()
         x_pulse = encoder(x_fp8_f32)
         snn = SpikeFP8Linear_MultiPrecision(
-            in_f, out_f, 
-            accum_precision='fp32', 
-            mode='sequential'
+            in_f, out_f,
+            accum_precision='fp32'
         ).to(device)
         snn.set_weight_from_float(w_fp8_f32, encoder)
         snn.reset()

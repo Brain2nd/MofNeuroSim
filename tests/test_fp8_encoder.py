@@ -9,7 +9,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
 from atomic_ops import PulseFloatingPointEncoder
-from atomic_ops.pulse_decoder import PulseFloatingPointDecoder
+from atomic_ops.encoding.pulse_decoder import PulseFloatingPointDecoder
 
 
 def test_fp_encoder():

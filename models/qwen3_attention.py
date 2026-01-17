@@ -29,7 +29,7 @@ from atomic_ops import (
     SpikeFP32Softmax,
     float32_to_pulse,
 )
-from atomic_ops.vec_logic_gates import VecMUX
+from atomic_ops.core.vec_logic_gates import VecMUX
 
 
 class SpikeQwen3Attention(nn.Module):
@@ -98,11 +98,9 @@ class SpikeQwen3Attention(nn.Module):
         self.rope = SpikeFP32RoPE(config.head_dim, config.rope_theta, neuron_template=nt)
 
         # Attention computation components
-        # QK matmul: need head_dim - 1 adders for dot product
+        # QK matmul: parallel tree reduction (single adder with scalar params handles shape changes)
         self.qk_mul = SpikeFP32Multiplier(neuron_template=nt)
-        self.qk_adders = nn.ModuleList([
-            SpikeFP32Adder(neuron_template=nt) for _ in range(max(1, config.head_dim - 1))
-        ])
+        self.qk_adder = SpikeFP32Adder(neuron_template=nt)
 
         # Scaling: 1 / sqrt(head_dim)
         self.scale_mul = SpikeFP32Multiplier(neuron_template=nt)
@@ -114,7 +112,7 @@ class SpikeQwen3Attention(nn.Module):
         # Softmax
         self.softmax = SpikeFP32Softmax(neuron_template=nt)
 
-        # AV matmul: reuse single adder
+        # AV matmul: parallel tree reduction
         self.av_mul = SpikeFP32Multiplier(neuron_template=nt)
         self.av_adder = SpikeFP32Adder(neuron_template=nt)
 
@@ -136,7 +134,6 @@ class SpikeQwen3Attention(nn.Module):
         Returns:
             [batch, seq_len, hidden_size, 32] FP32 pulse
         """
-        device = hidden_states.device
         batch_size = hidden_states.shape[0]
         seq_len = hidden_states.shape[1]
 
@@ -169,12 +166,12 @@ class SpikeQwen3Attention(nn.Module):
         # K: [batch, heads, seq_k, head_dim, 32]
         attn_scores = self._batched_matmul_qk(Q, K)  # [batch, heads, seq_q, seq_k, 32]
 
-        # 7. Scale
-        attn_scores = self.scale_mul(attn_scores, self.scale_pulse.to(device))
+        # 7. Scale (scale_pulse 通过 register_buffer 自动随模型移动到正确设备)
+        attn_scores = self.scale_mul(attn_scores, self.scale_pulse)
 
         # 8. Apply mask
         if attention_mask is not None:
-            attn_scores = self._apply_mask(attn_scores, attention_mask, device)
+            attn_scores = self._apply_mask(attn_scores, attention_mask)
 
         # 9. Softmax along seq_k dimension
         original_shape = attn_scores.shape
@@ -216,7 +213,7 @@ class SpikeQwen3Attention(nn.Module):
         return x_norm.reshape(batch, heads, seq, head_dim, bits)
 
     def _apply_rope(self, x, positions):
-        """Apply RoPE to multi-head tensor.
+        """Apply RoPE to multi-head tensor (vectorized).
 
         Args:
             x: [batch, heads, seq, head_dim, 32]
@@ -228,23 +225,17 @@ class SpikeQwen3Attention(nn.Module):
         batch_size, num_heads, seq_len, head_dim, _ = x.shape
 
         # Flatten: [batch * heads * seq, head_dim, 32]
-        x_contig = x.contiguous()
-        x_flat = x_contig.reshape(-1, head_dim, 32)
+        x_flat = x.contiguous().reshape(-1, head_dim, 32)
 
         # Expand positions: [batch * heads * seq]
+        # positions: [seq] -> [batch, heads, seq] -> [batch * heads * seq]
         pos_expanded = positions.unsqueeze(0).unsqueeze(0).expand(batch_size, num_heads, -1)
-        pos_flat = pos_expanded.reshape(-1)
+        pos_flat = pos_expanded.reshape(-1).float()
 
-        # Apply RoPE per position
-        results = []
-        for i in range(x_flat.shape[0]):
-            pos_i = pos_flat[i].unsqueeze(0)
-            x_i = x_flat[i:i+1]  # [1, head_dim, 32]
-            result_i = self.rope(x_i, pos_i)
-            results.append(result_i)
+        # Vectorized RoPE: process all positions in parallel
+        result_flat = self.rope(x_flat, pos_flat)
 
-        result = torch.cat(results, dim=0)
-        return result.reshape(batch_size, num_heads, seq_len, head_dim, 32)
+        return result_flat.reshape(batch_size, num_heads, seq_len, head_dim, 32)
 
     def _repeat_kv(self, x):
         """Repeat KV heads for GQA.
@@ -258,6 +249,48 @@ class SpikeQwen3Attention(nn.Module):
         batch, kv_heads, seq, head_dim, bits = x.shape
         x = x.unsqueeze(2).expand(batch, kv_heads, self.num_key_value_groups, seq, head_dim, bits)
         return x.reshape(batch, kv_heads * self.num_key_value_groups, seq, head_dim, bits)
+
+    def _parallel_reduce(self, x, dim, adder):
+        """Parallel tree-based reduction - slice first for consistent shapes.
+
+        Key insight: Neuron parameters auto-adapt only for last dimension changes.
+        By slicing into a list first, each adder call receives inputs of the
+        same shape [..., 32], ensuring consistent parameter shapes.
+
+        Args:
+            x: Input tensor with shape [..., n, ..., 32] where n is reduction dimension
+            dim: Dimension to reduce (negative indexing supported)
+            adder: SpikeFP32Adder instance for addition
+
+        Returns:
+            Tensor with reduction dimension squeezed out
+        """
+        ndim = x.ndim
+        if dim < 0:
+            dim = ndim + dim
+
+        # Move reduction dimension to -2 if needed
+        if dim != ndim - 2:
+            x = x.movedim(dim, -2)
+
+        n = x.shape[-2]  # Number of elements to reduce
+
+        # Slice into list - each element has shape [..., 32] (consistent!)
+        elements = [x[..., i, :] for i in range(n)]
+
+        # Pairwise tree reduction
+        while len(elements) > 1:
+            new_elements = []
+            for i in range(0, len(elements), 2):
+                if i + 1 < len(elements):
+                    # Both inputs have same shape [..., 32]
+                    result = adder(elements[i], elements[i + 1])
+                    new_elements.append(result)
+                else:
+                    new_elements.append(elements[i])
+            elements = new_elements
+
+        return elements[0]
 
     def _batched_matmul_qk(self, Q, K):
         """Q @ K^T matrix multiplication.
@@ -276,13 +309,8 @@ class SpikeQwen3Attention(nn.Module):
         # Element-wise multiplication
         products = self.qk_mul(Q_expanded, K_expanded)  # [batch, heads, seq_q, seq_k, head_dim, 32]
 
-        # Sum along head_dim (dot product)
-        acc = products[..., 0, :]  # [batch, heads, seq_q, seq_k, 32]
-
-        for i in range(1, self.head_dim):
-            acc = self.qk_adders[i - 1](acc, products[..., i, :])
-
-        return acc
+        # Parallel tree reduction along head_dim (dim=-2)
+        return self._parallel_reduce(products, dim=-2, adder=self.qk_adder)
 
     def _batched_matmul_av(self, attn, V):
         """Attn @ V matrix multiplication.
@@ -294,8 +322,6 @@ class SpikeQwen3Attention(nn.Module):
         Returns:
             [batch, heads, seq_q, head_dim, 32]
         """
-        seq_k = V.shape[2]
-
         # Broadcast expansion
         attn_expanded = attn.unsqueeze(-2)  # [batch, heads, seq_q, seq_k, 1, 32]
         V_expanded = V.unsqueeze(-4)        # [batch, heads, 1, seq_k, head_dim, 32]
@@ -303,32 +329,25 @@ class SpikeQwen3Attention(nn.Module):
         # Element-wise multiplication
         products = self.av_mul(attn_expanded, V_expanded)  # [batch, heads, seq_q, seq_k, head_dim, 32]
 
-        # Sum along seq_k
-        acc = products[..., 0, :, :]  # [batch, heads, seq_q, head_dim, 32]
+        # Parallel tree reduction along seq_k (dim=-3)
+        return self._parallel_reduce(products, dim=-3, adder=self.av_adder)
 
-        for i in range(1, seq_k):
-            acc = self.av_adder(acc, products[..., i, :, :])
-
-        return acc
-
-    def _apply_mask(self, scores, mask, device):
+    def _apply_mask(self, scores, mask):
         """Apply attention mask.
 
         Args:
             scores: [batch, heads, seq_q, seq_k, 32]
-            mask: [seq_q, seq_k] bool, True = masked
-            device: Target device
+            mask: [seq_q, seq_k] bool, True = masked (应与 scores 在同一设备)
 
         Returns:
             [batch, heads, seq_q, seq_k, 32]
         """
-        # Expand mask
+        # Expand mask (mask 应已在正确设备上)
         mask_expanded = mask.unsqueeze(0).unsqueeze(0).unsqueeze(-1)
-        mask_expanded = mask_expanded.expand_as(scores).float().to(device)
+        mask_expanded = mask_expanded.expand_as(scores).float()
 
-        # -inf expansion
-        neg_inf = self.neg_inf_pulse.to(device)
-        neg_inf_expanded = neg_inf.expand_as(scores)
+        # -inf expansion (neg_inf_pulse 通过 register_buffer 自动随模型移动)
+        neg_inf_expanded = self.neg_inf_pulse.expand_as(scores)
 
         # MUX: mask ? neg_inf : scores
         result = self.mask_mux(mask_expanded, neg_inf_expanded, scores)
