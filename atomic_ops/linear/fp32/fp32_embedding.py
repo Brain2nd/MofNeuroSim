@@ -17,7 +17,7 @@ embedding.set_weight_from_float(weight_tensor)
 y_pulse = embedding(token_ids)  # 纯 SNN
 
 # 训练模式
-embedding = SpikeFP32Embedding(vocab_size=1000, embed_dim=64, trainable=True)
+embedding = SpikeFP32Embedding(vocab_size=1000, embed_dim=64, training_mode=TrainingMode.STE)
 embedding.train()
 optimizer = torch.optim.Adam([embedding.weight_float], lr=1e-4)
 ```
@@ -26,6 +26,8 @@ optimizer = torch.optim.Adam([embedding.weight_float], lr=1e-4)
 """
 import torch
 import torch.nn as nn
+
+from atomic_ops.core.training_mode import TrainingMode
 import math
 from atomic_ops.core.vec_logic_gates import VecMUX
 
@@ -45,18 +47,18 @@ class SpikeFP32Embedding(nn.Module):
         vocab_size: 词表大小
         embed_dim: 嵌入维度
         neuron_template: 神经元模板，None 使用默认 IF 神经元
-        trainable: 是否启用 STE 训练模式
+        training_mode: 训练模式 (None/TrainingMode.STE/TrainingMode.TEMPORAL)
             - False (默认): 纯推理模式，权重为 buffer
             - True: 训练模式，权重为 Parameter，使用 STE 反向传播
 
     复杂度: O(log2(vocab_size)) 层MUX
     """
     def __init__(self, vocab_size: int, embed_dim: int, neuron_template=None,
-                 trainable=False):
+                 training_mode=None):
         super().__init__()
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
-        self.trainable = trainable
+        self.training_mode = TrainingMode.validate(training_mode)
         nt = neuron_template
 
         # 计算地址位数
@@ -66,7 +68,7 @@ class SpikeFP32Embedding(nn.Module):
         self.register_buffer('weight_pulse', None)
 
         # 浮点权重 (训练用)
-        if trainable:
+        if TrainingMode.is_ste(training_mode):
             self.weight_float = nn.Parameter(
                 torch.empty(vocab_size, embed_dim))
             nn.init.normal_(self.weight_float)
@@ -82,7 +84,7 @@ class SpikeFP32Embedding(nn.Module):
         
     def _sync_weight_pulse(self):
         """同步 float 权重到 pulse 缓存"""
-        if self.trainable and self._weight_dirty:
+        if TrainingMode.is_ste(self.training_mode) and self._weight_dirty:
             # 扩展到2的幂次方便MUX树处理
             padded_size = 2 ** self.addr_bits
             weight_data = self.weight_float.data
@@ -97,7 +99,7 @@ class SpikeFP32Embedding(nn.Module):
         """从浮点权重设置脉冲权重"""
         assert weight_float.shape == (self.vocab_size, self.embed_dim)
 
-        if self.trainable:
+        if TrainingMode.is_ste(self.training_mode):
             # 训练模式：更新 Parameter
             with torch.no_grad():
                 self.weight_float.copy_(weight_float)
@@ -171,7 +173,7 @@ class SpikeFP32Embedding(nn.Module):
             out_pulse = out_pulse.view(batch_shape + (self.embed_dim, 32))
 
         # 如果训练模式，用 STE 包装以支持梯度
-        if self.trainable and self.training:
+        if TrainingMode.is_ste(self.training_mode) and self.training:
             from atomic_ops.core.ste import ste_embedding
             return ste_embedding(token_ids, self.weight_float, out_pulse)
 

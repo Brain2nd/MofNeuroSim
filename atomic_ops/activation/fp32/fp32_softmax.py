@@ -10,6 +10,8 @@ Softmax(x_i) = exp(x_i) / sum(exp(x_j))
 """
 import torch
 import torch.nn as nn
+
+from atomic_ops.core.training_mode import TrainingMode
 from .fp32_exp import SpikeFP32Exp
 from atomic_ops.arithmetic.fp32.fp32_adder import SpikeFP32Adder
 from atomic_ops.arithmetic.fp32.fp32_div import SpikeFP32Divider
@@ -25,11 +27,11 @@ class SpikeFP32Softmax(nn.Module):
 
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
-        trainable: 是否启用 STE 训练模式（梯度流过）
+        training_mode: 训练模式 (None/TrainingMode.STE/TrainingMode.TEMPORAL)（梯度流过）
     """
-    def __init__(self, neuron_template=None, trainable=False):
+    def __init__(self, neuron_template=None, training_mode=None):
         super().__init__()
-        self.trainable = trainable
+        self.training_mode = TrainingMode.validate(training_mode)
         nt = neuron_template
         
         self.exp = SpikeFP32Exp(neuron_template=nt)
@@ -53,7 +55,7 @@ class SpikeFP32Softmax(nn.Module):
             out_pulse = self.divider(exp_x, sum_exp_expanded)
 
         # 如果训练模式，用 STE 包装以支持梯度
-        if self.trainable and self.training:
+        if TrainingMode.is_ste(self.training_mode) and self.training:
             from atomic_ops.core.ste import ste_softmax
             # pulse 格式的 softmax 维度是 -2 (N 维度)
             return ste_softmax(x, out_pulse, dim=-2)

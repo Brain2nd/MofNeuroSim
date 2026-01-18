@@ -83,6 +83,8 @@ y_pulse = linear(x_pulse)  # FP8: [batch, 32, 8]
 import torch
 import torch.nn as nn
 
+from atomic_ops.core.training_mode import TrainingMode
+
 from atomic_ops.arithmetic.fp8.fp8_mul import SpikeFP8Multiplier
 from atomic_ops.arithmetic.fp8.fp8_adder_spatial import SpikeFP8Adder_Spatial
 from atomic_ops.arithmetic.fp16.fp16_components import FP8ToFP16Converter, FP16ToFP8Converter
@@ -108,7 +110,7 @@ class SpikeFP8Linear_MultiPrecision(nn.Module):
             - 'fp8':  FP8累加 → 输出FP8脉冲[8位]（最快但精度损失大）
         mode: 累加模式，'sequential' 或 'tree'（仅FP8模式支持tree）
         neuron_template: 神经元模板，None 使用默认 IF 神经元
-        trainable: 是否启用 STE 训练模式
+        training_mode: 训练模式 (None/TrainingMode.STE/TrainingMode.TEMPORAL)
             - False (默认): 纯推理模式，权重为 buffer
             - True: 训练模式，权重为 Parameter，使用 STE 反向传播
 
@@ -116,12 +118,12 @@ class SpikeFP8Linear_MultiPrecision(nn.Module):
         输入[FP8] → FP8×FP8→FP32乘法 → 累加[accum_precision] → 输出[accum_precision位数]
     """
     def __init__(self, in_features, out_features, accum_precision='fp8',
-                 neuron_template=None, trainable=False):
+                 neuron_template=None, training_mode=None):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
         self.accum_precision = accum_precision
-        self.trainable = trainable
+        self.training_mode = TrainingMode.validate(training_mode)
         nt = neuron_template
 
         # FP8 乘法器（共享）
@@ -148,7 +150,7 @@ class SpikeFP8Linear_MultiPrecision(nn.Module):
         self.register_buffer('weight_pulse', None)
 
         # 浮点权重 (训练用)
-        if trainable:
+        if TrainingMode.is_ste(training_mode):
             self.weight_float = nn.Parameter(
                 torch.empty(out_features, in_features))
             nn.init.kaiming_uniform_(self.weight_float, a=5**0.5)
@@ -159,7 +161,7 @@ class SpikeFP8Linear_MultiPrecision(nn.Module):
         
     def _sync_weight_pulse(self):
         """同步 float 权重到 pulse 缓存"""
-        if self.trainable and self._weight_dirty:
+        if TrainingMode.is_ste(self.training_mode) and self._weight_dirty:
             from atomic_ops.encoding.converters import float_to_fp8_bits
             self.weight_pulse = float_to_fp8_bits(
                 self.weight_float.data,
@@ -176,7 +178,7 @@ class SpikeFP8Linear_MultiPrecision(nn.Module):
         """
         assert weight_float.shape == (self.out_features, self.in_features)
 
-        if self.trainable:
+        if TrainingMode.is_ste(self.training_mode):
             # 训练模式：更新 Parameter
             with torch.no_grad():
                 self.weight_float.copy_(weight_float)
@@ -234,7 +236,7 @@ class SpikeFP8Linear_MultiPrecision(nn.Module):
                     out_pulse = self._fp8_accumulate(products_fp32)
 
         # 如果训练模式，用 STE 包装以支持梯度
-        if self.trainable and self.training:
+        if TrainingMode.is_ste(self.training_mode) and self.training:
             from atomic_ops.core.ste import ste_linear
             return ste_linear(x, self.weight_float, out_pulse)
 

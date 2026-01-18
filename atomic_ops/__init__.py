@@ -4,9 +4,14 @@ Atomic Ops Package - 100% 纯 SNN 门电路实现的浮点运算模块
 支持统一的神经元模板机制，可在 IF/LIF 之间切换用于物理仿真。
 支持位精确模式 (BIT_EXACT) 和时间动力学模式 (TEMPORAL) 灵活切换。
 
+训练模式 (TrainingMode):
+- TrainingMode.NONE: 纯推理模式 (默认)
+- TrainingMode.STE: 位精确 STE 训练模式
+- TrainingMode.TEMPORAL: 时间动力学训练模式 (未来扩展)
+
 使用示例:
 ```python
-from atomic_ops import ANDGate, SimpleLIFNode, SpikeFP32Adder, SpikeMode
+from atomic_ops import ANDGate, SimpleLIFNode, SpikeFP32Adder, SpikeMode, TrainingMode
 
 # 默认 IF 神经元 (理想数字逻辑)
 and_gate = ANDGate()
@@ -25,10 +30,16 @@ with SpikeMode.temporal():
 with SpikeMode.bit_exact():
     # 推理模式 - 每次 forward 前清除膜电位
     result = model(input)
+
+# TrainingMode 训练模式控制
+linear = SpikeFP32Linear_MultiPrecision(64, 32, training_mode=TrainingMode.STE)
 ```
 """
 # SpikeMode 模式控制器 (位精确模式 vs 时间动力学模式)
 from .core.spike_mode import SpikeMode
+
+# TrainingMode 训练模式枚举
+from .core.training_mode import TrainingMode
 
 # STE (Straight-Through Estimator) for SNN training
 from .core.ste import (

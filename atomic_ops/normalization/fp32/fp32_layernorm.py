@@ -14,6 +14,8 @@ LayerNorm(x) = (x - mean(x)) / sqrt(var(x) + eps)
 """
 import torch
 import torch.nn as nn
+
+from atomic_ops.core.training_mode import TrainingMode
 import struct
 from atomic_ops.core.logic_gates import NOTGate
 from atomic_ops.arithmetic.fp64.fp64_components import FP32ToFP64Converter, FP64ToFP32Converter
@@ -48,12 +50,12 @@ class SpikeFP32LayerNorm(nn.Module):
     Args:
         eps: epsilon (default: 1e-6)
         neuron_template: 神经元模板，None 使用默认 IF 神经元
-        trainable: 是否启用 STE 训练模式（梯度流过）
+        training_mode: 训练模式 (None/TrainingMode.STE/TrainingMode.TEMPORAL)（梯度流过）
     """
-    def __init__(self, eps=1e-6, neuron_template=None, trainable=False):
+    def __init__(self, eps=1e-6, neuron_template=None, training_mode=None):
         super().__init__()
         self.eps = eps
-        self.trainable = trainable
+        self.training_mode = TrainingMode.validate(training_mode)
         nt = neuron_template
 
         self.fp32_to_fp64 = FP32ToFP64Converter(neuron_template=nt)
@@ -179,7 +181,7 @@ class SpikeFP32LayerNorm(nn.Module):
             out_pulse = self.fp64_to_fp32(result)
 
         # 如果训练模式，用 STE 包装以支持梯度
-        if self.trainable and self.training:
+        if TrainingMode.is_ste(self.training_mode) and self.training:
             from atomic_ops.core.ste import ste_layernorm
             return ste_layernorm(x, out_pulse, self.eps)
 

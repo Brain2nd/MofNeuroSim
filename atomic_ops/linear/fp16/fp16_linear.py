@@ -54,7 +54,7 @@ y_pulse = linear(x_pulse)  # 纯 SNN
 linear = SpikeFP16Linear_MultiPrecision(
     in_features=64,
     out_features=32,
-    trainable=True  # 启用 STE 训练
+    training_mode=TrainingMode.STE  # 启用 STE 训练
 )
 linear.train()
 optimizer = torch.optim.Adam([linear.weight_float], lr=1e-4)
@@ -65,6 +65,8 @@ optimizer = torch.optim.Adam([linear.weight_float], lr=1e-4)
 """
 import torch
 import torch.nn as nn
+
+from atomic_ops.core.training_mode import TrainingMode
 
 from atomic_ops.arithmetic.fp16.fp16_mul_to_fp32 import SpikeFP16MulToFP32
 from atomic_ops.arithmetic.fp16.fp16_adder import SpikeFP16Adder
@@ -86,7 +88,7 @@ class SpikeFP16Linear_MultiPrecision(nn.Module):
             - 'fp32': FP32累加 → FP16输出（最高精度，推荐）
             - 'fp16': FP16累加 → FP16输出（较快但有精度损失）
         neuron_template: 神经元模板，None 使用默认 IF 神经元
-        trainable: 是否启用 STE 训练模式
+        training_mode: 训练模式 (None/TrainingMode.STE/TrainingMode.TEMPORAL)
             - False (默认): 纯推理模式，权重为 buffer
             - True: 训练模式，权重为 Parameter，使用 STE 反向传播
 
@@ -94,12 +96,12 @@ class SpikeFP16Linear_MultiPrecision(nn.Module):
         输入[FP16] → FP16×FP16→FP32乘法 → 累加[accum_precision] → 转换 → 输出[FP16]
     """
     def __init__(self, in_features, out_features, accum_precision='fp32',
-                 neuron_template=None, trainable=False):
+                 neuron_template=None, training_mode=None):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
         self.accum_precision = accum_precision
-        self.trainable = trainable
+        self.training_mode = TrainingMode.validate(training_mode)
         nt = neuron_template
 
         # 所有模式都使用 FP32 乘法器（避免乘法阶段舍入）
@@ -119,7 +121,7 @@ class SpikeFP16Linear_MultiPrecision(nn.Module):
         self.register_buffer('weight_pulse', None)
 
         # 浮点权重 (训练用)
-        if trainable:
+        if TrainingMode.is_ste(training_mode):
             self.weight_float = nn.Parameter(
                 torch.empty(out_features, in_features))
             nn.init.kaiming_uniform_(self.weight_float, a=5**0.5)
@@ -130,7 +132,7 @@ class SpikeFP16Linear_MultiPrecision(nn.Module):
 
     def _sync_weight_pulse(self):
         """同步 float 权重到 pulse 缓存"""
-        if self.trainable and self._weight_dirty:
+        if TrainingMode.is_ste(self.training_mode) and self._weight_dirty:
             from atomic_ops.encoding.converters import float16_to_pulse
             self.weight_pulse = float16_to_pulse(
                 self.weight_float.data,
@@ -147,7 +149,7 @@ class SpikeFP16Linear_MultiPrecision(nn.Module):
         from atomic_ops.encoding.converters import float16_to_pulse
         assert weight_float.shape == (self.out_features, self.in_features)
 
-        if self.trainable:
+        if TrainingMode.is_ste(self.training_mode):
             # 训练模式：更新 Parameter
             with torch.no_grad():
                 self.weight_float.copy_(weight_float)
@@ -192,7 +194,7 @@ class SpikeFP16Linear_MultiPrecision(nn.Module):
                     out_pulse = self._fp16_accumulate(products_fp32)
 
         # 如果训练模式，用 STE 包装以支持梯度
-        if self.trainable and self.training:
+        if TrainingMode.is_ste(self.training_mode) and self.training:
             from atomic_ops.core.ste import ste_linear
             return ste_linear(x, self.weight_float, out_pulse)
 

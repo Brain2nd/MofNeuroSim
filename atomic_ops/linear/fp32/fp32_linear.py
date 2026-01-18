@@ -47,6 +47,8 @@ FP32 输入输出的全连接层，支持 FP32/FP64 中间累加精度。
 使用示例
 --------
 ```python
+from atomic_ops import TrainingMode
+
 # 推理模式 (默认)
 linear = SpikeFP32Linear_MultiPrecision(
     in_features=64,
@@ -56,11 +58,11 @@ linear = SpikeFP32Linear_MultiPrecision(
 linear.set_weight_from_float(weight_tensor)
 y_pulse = linear(x_pulse)  # 纯 SNN
 
-# 训练模式 (纯脉冲)
+# 位精确 STE 训练模式
 linear = SpikeFP32Linear_MultiPrecision(
     in_features=64,
     out_features=32,
-    trainable=True  # 启用 STE 训练
+    training_mode=TrainingMode.STE
 )
 linear.train()
 # 使用纯脉冲优化器
@@ -74,6 +76,7 @@ optimizer = PulseSGD(linear.pulse_parameters(), lr=0.01)
 import torch
 import torch.nn as nn
 
+from atomic_ops.core.training_mode import TrainingMode
 from atomic_ops.arithmetic.fp32.fp32_mul import SpikeFP32Multiplier
 from atomic_ops.arithmetic.fp32.fp32_adder import SpikeFP32Adder
 from atomic_ops.arithmetic.fp64.fp64_adder import SpikeFP64Adder
@@ -94,20 +97,21 @@ class SpikeFP32Linear_MultiPrecision(nn.Module):
             - 'fp32': FP32累加 → FP32输出（与PyTorch一致，推荐）
             - 'fp64': FP64累加 → FP32输出（更高精度）
         neuron_template: 神经元模板，None 使用默认 IF 神经元
-        trainable: 是否启用 STE 训练模式
-            - False (默认): 纯推理模式，权重为 buffer
-            - True: 训练模式，权重为脉冲 Parameter，使用纯 SNN backward
+        training_mode: 训练模式
+            - None (默认): 纯推理模式，权重为 buffer
+            - TrainingMode.STE: 位精确 STE 训练，权重为脉冲 Parameter
+            - TrainingMode.TEMPORAL: 时间动力学训练 (未来扩展)
 
     架构:
         输入[FP32] → FP32×FP32→FP32乘法 → 累加[accum_precision] → 输出[FP32]
     """
     def __init__(self, in_features, out_features, accum_precision='fp32',
-                 neuron_template=None, trainable=False):
+                 neuron_template=None, training_mode=None):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
         self.accum_precision = accum_precision
-        self.trainable = trainable
+        self.training_mode = TrainingMode.validate(training_mode)
         nt = neuron_template
 
         # FP32 乘法器 (逐元素乘法，共享)
@@ -126,8 +130,8 @@ class SpikeFP32Linear_MultiPrecision(nn.Module):
             self.fp32_adder = SpikeFP32Adder(neuron_template=nt)
 
         # 脉冲权重
-        if trainable:
-            # 训练模式：权重为 Parameter (脉冲格式)
+        if TrainingMode.is_ste(self.training_mode):
+            # STE 训练模式：权重为 Parameter (脉冲格式)
             # 初始化为零脉冲，需要通过 set_weight_from_float 或 set_weight_pulse 设置
             self.weight_pulse = nn.Parameter(
                 torch.zeros(out_features, in_features, 32),
@@ -152,7 +156,7 @@ class SpikeFP32Linear_MultiPrecision(nn.Module):
 
         weight_pulse = float32_to_pulse(weight_float, device=weight_float.device)
 
-        if self.trainable:
+        if TrainingMode.is_ste(self.training_mode):
             # 训练模式：更新 Parameter
             with torch.no_grad():
                 self.weight_pulse.copy_(weight_pulse)
@@ -168,7 +172,7 @@ class SpikeFP32Linear_MultiPrecision(nn.Module):
         """
         assert weight_pulse.shape == (self.out_features, self.in_features, 32)
 
-        if self.trainable:
+        if TrainingMode.is_ste(self.training_mode):
             with torch.no_grad():
                 self.weight_pulse.copy_(weight_pulse)
         else:
@@ -181,7 +185,7 @@ class SpikeFP32Linear_MultiPrecision(nn.Module):
 
     def pulse_parameters(self):
         """返回脉冲格式的可训练参数 (用于纯脉冲优化器)"""
-        if self.trainable:
+        if TrainingMode.is_ste(self.training_mode):
             yield self.weight_pulse
         else:
             return iter([])
@@ -215,7 +219,7 @@ class SpikeFP32Linear_MultiPrecision(nn.Module):
                 out_pulse = self._fp32_accumulate(products)
 
         # 如果训练模式，用 STE 包装以支持梯度
-        if self.trainable and self.training:
+        if TrainingMode.is_ste(self.training_mode) and self.training:
             from atomic_ops.core.ste import ste_linear
             # STE: 返回 pulse，backward 使用纯 SNN 组件计算梯度
             return ste_linear(x, self.weight_pulse, out_pulse)

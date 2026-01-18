@@ -6,7 +6,7 @@ STE Training Framework Tests - 纯脉冲训练测试
 1. 纯脉冲权重存储 - weight_pulse 为主存储
 2. 纯脉冲 backward - 使用 SNN 组件计算梯度
 3. 训练收敛性 - loss 随迭代下降
-4. 向后兼容性 - trainable=False 行为不变
+4. 向后兼容性 - training_mode=None 行为不变
 
 架构:
 - 层始终返回 pulse 格式
@@ -23,6 +23,8 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from atomic_ops import TrainingMode
+
 
 def test_fp32_linear_pulse_weight():
     """Test FP32 Linear with pure pulse weight storage"""
@@ -34,7 +36,7 @@ def test_fp32_linear_pulse_weight():
     batch, seq = 2, 3
 
     # Create trainable SNN Linear (pure pulse weight)
-    snn_linear = SpikeFP32Linear_MultiPrecision(in_features, out_features, trainable=True)
+    snn_linear = SpikeFP32Linear_MultiPrecision(in_features, out_features, training_mode=TrainingMode.STE)
     snn_linear.train()
 
     # Verify weight is pulse format
@@ -73,7 +75,7 @@ def test_fp32_linear_training_convergence():
     from atomic_ops.core.ste import ste_decode
 
     dim = 4
-    snn_linear = SpikeFP32Linear_MultiPrecision(dim, dim, trainable=True)
+    snn_linear = SpikeFP32Linear_MultiPrecision(dim, dim, training_mode=TrainingMode.STE)
     snn_linear.train()
 
     # Initialize with random weight
@@ -136,9 +138,9 @@ def test_activation_gradient_flow():
     dim = 4  # 使用较小维度避免神经元状态冲突
 
     # 只测试 Sigmoid (其他激活函数类似)
-    snn_linear = SpikeFP32Linear_MultiPrecision(dim, dim, trainable=True)
+    snn_linear = SpikeFP32Linear_MultiPrecision(dim, dim, training_mode=TrainingMode.STE)
     snn_linear.train()
-    snn_act = SpikeFP32Sigmoid(trainable=True)
+    snn_act = SpikeFP32Sigmoid(training_mode=TrainingMode.STE)
     snn_act.train()
 
     # Set weight
@@ -170,7 +172,7 @@ def test_activation_gradient_flow():
 
 
 def test_backward_compatibility():
-    """Test that default trainable=False behavior is unchanged"""
+    """Test that default training_mode=None behavior is unchanged"""
     from atomic_ops import SpikeFP32Linear_MultiPrecision
     from atomic_ops import float32_to_pulse, pulse_to_float32
 
@@ -200,9 +202,9 @@ def test_backward_compatibility():
 
     # Verify weight_pulse is buffer (not Parameter)
     assert not isinstance(snn_linear.weight_pulse, torch.nn.Parameter), \
-        "weight_pulse should be buffer when trainable=False"
+        "weight_pulse should be buffer when training_mode=None"
 
-    print("[Backward Compat] Default trainable=False works correctly")
+    print("[Backward Compat] Default training_mode=None works correctly")
     print("  PASS: Backward compatibility")
 
 
@@ -245,12 +247,12 @@ def test_pulse_parameters():
     from atomic_ops import SpikeFP32Linear_MultiPrecision
 
     # Non-trainable: no pulse parameters
-    linear_eval = SpikeFP32Linear_MultiPrecision(4, 2, trainable=False)
+    linear_eval = SpikeFP32Linear_MultiPrecision(4, 2, training_mode=None)
     params_eval = list(linear_eval.pulse_parameters())
     assert len(params_eval) == 0, "Non-trainable should have no pulse parameters"
 
     # Trainable: has pulse parameters
-    linear_train = SpikeFP32Linear_MultiPrecision(4, 2, trainable=True)
+    linear_train = SpikeFP32Linear_MultiPrecision(4, 2, training_mode=TrainingMode.STE)
     params_train = list(linear_train.pulse_parameters())
     assert len(params_train) == 1, "Trainable should have 1 pulse parameter"
     assert params_train[0] is linear_train.weight_pulse, "Should return weight_pulse"

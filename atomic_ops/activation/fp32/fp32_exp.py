@@ -34,6 +34,8 @@ FP32 指数函数 exp(x) - 100%纯SNN门电路实现 (glibc算法复刻版)
 """
 import torch
 import torch.nn as nn
+
+from atomic_ops.core.training_mode import TrainingMode
 from atomic_ops.core.logic_gates import (ANDGate, ORGate, XORGate, NOTGate, MUXGate,
                           HalfAdder, FullAdder, RippleCarryAdder)
 from atomic_ops.core.vec_logic_gates import (
@@ -578,11 +580,11 @@ class SpikeFP32Exp(nn.Module):
 
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
-        trainable: 是否启用 STE 训练模式（梯度流过）
+        training_mode: 训练模式 (None/TrainingMode.STE/TrainingMode.TEMPORAL)（梯度流过）
     """
-    def __init__(self, neuron_template=None, trainable=False):
+    def __init__(self, neuron_template=None, training_mode=None):
         super().__init__()
-        self.trainable = trainable
+        self.training_mode = TrainingMode.validate(training_mode)
         nt = neuron_template
         
         # 运算组件
@@ -769,7 +771,7 @@ class SpikeFP32Exp(nn.Module):
             out_pulse = self.inf_mux(is_pos_inf_32, inf_val, out_pulse)
 
         # 如果训练模式，用 STE 包装以支持梯度
-        if self.trainable and self.training:
+        if TrainingMode.is_ste(self.training_mode) and self.training:
             from atomic_ops.core.ste import ste_exp
             return ste_exp(x, out_pulse)
 

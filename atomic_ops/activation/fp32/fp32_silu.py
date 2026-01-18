@@ -10,6 +10,8 @@ SiLU(x) = x * sigmoid(x)
 """
 import torch
 import torch.nn as nn
+
+from atomic_ops.core.training_mode import TrainingMode
 from atomic_ops.arithmetic.fp32.fp32_mul import SpikeFP32Multiplier
 from .fp32_sigmoid import SpikeFP32Sigmoid
 
@@ -24,11 +26,11 @@ class SpikeFP32SiLU(nn.Module):
 
     Args:
         neuron_template: 神经元模板，None 使用默认 IF 神经元
-        trainable: 是否启用 STE 训练模式（梯度流过）
+        training_mode: 训练模式 (None/TrainingMode.STE/TrainingMode.TEMPORAL)（梯度流过）
     """
-    def __init__(self, neuron_template=None, trainable=False):
+    def __init__(self, neuron_template=None, training_mode=None):
         super().__init__()
-        self.trainable = trainable
+        self.training_mode = TrainingMode.validate(training_mode)
         nt = neuron_template
 
         self.sigmoid = SpikeFP32Sigmoid(neuron_template=nt)
@@ -45,7 +47,7 @@ class SpikeFP32SiLU(nn.Module):
             out_pulse = self.mul(x, sig_x)
 
         # 如果训练模式，用 STE 包装以支持梯度
-        if self.trainable and self.training:
+        if TrainingMode.is_ste(self.training_mode) and self.training:
             from atomic_ops.core.ste import ste_silu
             return ste_silu(x, out_pulse)
 

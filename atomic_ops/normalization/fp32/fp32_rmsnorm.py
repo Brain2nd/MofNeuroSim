@@ -23,13 +23,15 @@ rmsnorm = SpikeFP32RMSNormFullFP64(dim=64)
 y_pulse = rmsnorm(x_pulse)  # 纯 SNN
 
 # 训练模式
-rmsnorm = SpikeFP32RMSNormFullFP64(dim=64, trainable=True)
+rmsnorm = SpikeFP32RMSNormFullFP64(dim=64, training_mode=TrainingMode.STE)
 rmsnorm.train()
 optimizer = torch.optim.Adam([rmsnorm.weight], lr=1e-4)
 ```
 """
 import torch
 import torch.nn as nn
+
+from atomic_ops.core.training_mode import TrainingMode
 from atomic_ops.core.logic_gates import (ANDGate, ORGate, XORGate, NOTGate, MUXGate)
 from atomic_ops.arithmetic.fp64.fp64_mul import SpikeFP64Multiplier
 from atomic_ops.arithmetic.fp64.fp64_adder import SpikeFP64Adder
@@ -45,12 +47,12 @@ class SpikeFP32RMSNormFullFP64(nn.Module):
         normalized_shape: 输入特征维度 (int)
         eps: epsilon (default: 1e-6)
         neuron_template: 神经元模板
-        trainable: 是否启用 STE 训练模式
+        training_mode: 训练模式 (None/TrainingMode.STE/TrainingMode.TEMPORAL)
             - False (默认): 纯推理模式
             - True: 训练模式，使用 STE 反向传播
     """
     def __init__(self, normalized_shape, eps=1e-6, neuron_template=None,
-                 trainable=False):
+                 training_mode=None):
         super().__init__()
         if isinstance(normalized_shape, int):
             self.dim = normalized_shape
@@ -58,7 +60,7 @@ class SpikeFP32RMSNormFullFP64(nn.Module):
             self.dim = normalized_shape[0]
 
         self.eps = eps
-        self.trainable = trainable
+        self.training_mode = TrainingMode.validate(training_mode)
         nt = neuron_template
 
         self.to_fp64 = FP32ToFP64Converter(neuron_template=nt)
@@ -142,7 +144,7 @@ class SpikeFP32RMSNormFullFP64(nn.Module):
             out_pulse = self.to_fp32(y_fp64)
 
         # 如果训练模式，用 STE 包装以支持梯度
-        if self.trainable and self.training:
+        if TrainingMode.is_ste(self.training_mode) and self.training:
             from atomic_ops.core.ste import ste_rmsnorm
             return ste_rmsnorm(x, self.weight, out_pulse, self.eps)
 
