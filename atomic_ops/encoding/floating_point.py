@@ -374,8 +374,41 @@ class PulseFloatingPointEncoder(nn.Module):
         
         # e_reg 是 Little Endian [E0, E1, E2, E3]，需要转为 Big Endian [E3, E2, E1, E0]
         e_out = e_reg.flip(-1)
+
+        # =========================================================
+        # Post-Processing: Handle Inf and NaN (ADC Special Value Logic)
+        # =========================================================
+        # 编码器作为 ADC，负责将“模拟”的特殊值转换为对应的脉冲模式
         
-        return torch.cat([s_out, e_out, m_reg], dim=-1).view(input_shape + (8,))
+        is_inf = torch.isinf(flat_x).float()
+        is_nan = torch.isnan(flat_x).float()
+        is_special = (is_inf + is_nan).clamp(0, 1)
+        not_special = 1.0 - is_special
+
+        # Special Exponent: All Ones
+        # 扩展到 E_bits
+        all_ones_exp = torch.ones_like(e_out)
+        
+        # Special Mantissa:
+        # Inf -> All Zeros
+        # NaN -> Non-Zero (we set MSB to 1 for generic NaN)
+        nan_mant = torch.zeros_like(m_reg)
+        if self.M_bits > 0:
+            nan_mant[..., 0] = 1.0 # Set MSB to 1
+        
+        special_e = all_ones_exp
+        special_m = torch.where(is_nan.bool(), nan_mant, torch.zeros_like(m_reg))
+
+        # Override Normal Results
+        # e_out = not_special * e_out + is_special * special_e
+        e_out = torch.where(is_special.bool(), special_e, e_out)
+        m_reg = torch.where(is_special.bool(), special_m, m_reg)
+        # s_out for NaN is usually 0, for Inf follows inputs.
+        # Sign check detected sign correctly for Inf. For NaN force 0? 
+        # PyTorch sign(NaN) is 0? Let's check. usually keeps sign bit or 0.
+        # We leave S as detected.
+
+        return torch.cat([s_out, e_out, m_reg], dim=-1).view(input_shape + (self.total_bits,))
 
     def reset(self):
         self.sign_node.reset()

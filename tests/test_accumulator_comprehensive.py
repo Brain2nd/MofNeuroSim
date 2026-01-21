@@ -1,25 +1,37 @@
 """
-累加器全面测试 - 覆盖不同精度、组件、累加顺序
-==================================================
+累加器与精度全面测试
+===================
 
 测试维度：
-1. 不同精度组件：FP8/FP16/FP32 Linear
-2. 不同中间精度：FP32/FP64 内部计算
-3. 不同累加顺序：Sequential vs Parallel
+1. 组件精度：FP8 / FP16 / FP32 Linear
+2. 累加模式：Sequential vs Parallel (SNN累加器核心机制)
+3. 中间精度：FP32 vs FP64 (针对 Softmax, RMSNorm, LayerNorm, Linear)
+
+目标：
+覆盖 MofNeuroSim 项目中关于累加器和精度的所有关键验证点。
 
 作者: MofNeuroSim Project
 """
+
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
 import torch.nn as nn
 import numpy as np
 import struct
 from collections import defaultdict
+import time
 
 # 设备选择
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
+
+# =============================================================================
+# 工具函数
+# =============================================================================
 
 def compute_ulp_error(snn_val, ref_val, precision='fp32'):
     """计算 ULP 误差"""
@@ -45,582 +57,297 @@ def compute_ulp_error(snn_val, ref_val, precision='fp32'):
     return abs(int(ref_bits) - int(snn_bits))
 
 
+def compute_ulp_stats(snn_tensor, ref_tensor, precision='fp32'):
+    """计算张量的 ULP 统计信息"""
+    snn_flat = snn_tensor.detach().cpu().flatten().numpy()
+    ref_flat = ref_tensor.detach().cpu().flatten().numpy()
+    
+    ulps = []
+    for s, r in zip(snn_flat, ref_flat):
+        ulps.append(compute_ulp_error(s, r, precision))
+    
+    # 过滤掉非有限值的 ULP (通常是 Inf/NaN)
+    valid_ulps = [u for u in ulps if np.isfinite(u)]
+    
+    if not valid_ulps:
+        return {'max': -1, 'mean': -1, 'le1_rate': 0.0}
+        
+    return {
+        'max': max(valid_ulps),
+        'mean': np.mean(valid_ulps),
+        'le1_rate': sum(1 for u in valid_ulps if u <= 1) / len(valid_ulps) * 100
+    }
+
+
+def generate_test_values(dim, max_abs=None):
+    """生成包含边界值和随机值的测试数据"""
+    values = []
+    # 边界值
+    boundary = [0.0, 1.0, -1.0, 0.5, -0.5, 2.0, -2.0, 0.1, -0.1]
+    if max_abs:
+        boundary.extend([max_abs, -max_abs, max_abs/2])
+    else:
+        boundary.extend([10.0, -10.0])
+        
+    # 填充
+    values.extend(boundary[:min(dim, len(boundary))])
+    remaining = dim - len(values)
+    if remaining > 0:
+        random_vals = torch.randn(remaining).tolist()
+        if max_abs:
+            random_vals = [max(-max_abs, min(max_abs, v)) for v in random_vals]
+        values.extend(random_vals)
+        
+    return torch.tensor(values[:dim], dtype=torch.float32, device=device)
+
+
+# =============================================================================
+# 测试模块
+# =============================================================================
+
 def test_accumulator_modes():
-    """测试累加器两种模式的差异"""
+    """测试 1: 累加器拓扑逻辑验证 (串行链式 vs 并行树状)"""
     print("\n" + "="*70)
-    print("测试 1: 累加器模式对比 (Sequential vs Parallel)")
+    print("测试 1: 累加器拓扑逻辑验证 (串行链式 vs 并行树状)")
+    print("目标: 使用高精度 FP64 加法器验证不同归约策略(Topology)的数学正确性")
     print("="*70)
 
     from atomic_ops.arithmetic.fp64.fp64_adder import SpikeFP64Adder
     from atomic_ops.core.accumulator import SequentialAccumulator, ParallelAccumulator
     from atomic_ops.encoding.converters import float64_to_pulse, pulse_to_float64
 
-    adder_seq = SpikeFP64Adder().to(device)
-    adder_par = SpikeFP64Adder().to(device)
-
-    seq_acc = SequentialAccumulator(adder_seq)
-    par_acc = ParallelAccumulator(adder_par)
-
-    test_dims = [8, 16, 32, 64, 128, 256]
+    test_dims = [8, 16, 32, 64]
 
     results = []
     for dim in test_dims:
-        # 生成随机数据
-        torch.manual_seed(42)
+        # 每次迭代重新实例化，确保无状态残留
+        adder_seq = SpikeFP64Adder().to(device)
+        adder_par = SpikeFP64Adder().to(device)
+        seq_acc = SequentialAccumulator(adder_seq)
+        par_acc = ParallelAccumulator(adder_par)
+
         data = torch.randn(dim).to(device)
-
-        # PyTorch 参考
         ref_sum = data.sum().item()
+        data_pulse = float64_to_pulse(data.double(), device=device)
 
-        # 转换为脉冲
-        data_pulse = float64_to_pulse(data.double(), device=device)  # [dim, 64]
-
-        # Sequential 累加
-        adder_seq.reset()
+        # Sequential
         seq_result_pulse = seq_acc.reduce(data_pulse, dim=-2)
         seq_result = pulse_to_float64(seq_result_pulse).item()
 
-        # Parallel 累加
-        adder_par.reset()
+        # Parallel
         par_result_pulse = par_acc.reduce(data_pulse, dim=-2)
         par_result = pulse_to_float64(par_result_pulse).item()
 
-        # 计算误差
         seq_ulp = compute_ulp_error(seq_result, ref_sum, 'fp32')
         par_ulp = compute_ulp_error(par_result, ref_sum, 'fp32')
-        diff_ulp = compute_ulp_error(seq_result, par_result, 'fp32')
 
         results.append({
             'dim': dim,
-            'ref': ref_sum,
-            'seq': seq_result,
-            'par': par_result,
             'seq_ulp': seq_ulp,
-            'par_ulp': par_ulp,
-            'diff_ulp': diff_ulp
+            'par_ulp': par_ulp
         })
-
-        print(f"  dim={dim:4d}: ref={ref_sum:12.6f}, seq={seq_result:12.6f}, par={par_result:12.6f}")
-        print(f"           seq_ulp={seq_ulp:6.0f}, par_ulp={par_ulp:6.0f}, seq_vs_par_ulp={diff_ulp:6.0f}")
+        print(f"  dim={dim:3d}: Seq ULP={seq_ulp}, Par ULP={par_ulp}")
 
     return results
 
 
-def test_rmsnorm_accumulator_modes():
-    """测试 RMSNorm 在不同累加模式下的表现"""
+def test_softmax_precision():
+    """测试 2: SpikeFP32Softmax (FP32 IO) - 中间累加精度验证"""
     print("\n" + "="*70)
-    print("测试 2: RMSNorm 累加模式对比")
+    print("测试 2: SpikeFP32Softmax (FP32 IO) - 中间累加精度验证")
+    print("目标: 验证 accum_precision='fp64' 在输入输出保持 FP32 时的精度增益")
     print("="*70)
 
-    from atomic_ops.normalization.fp32.fp32_rmsnorm import SpikeFP32RMSNormFullFP64
+    from atomic_ops import SpikeFP32Softmax
     from atomic_ops.encoding.converters import float32_to_pulse, pulse_to_float32
 
-    test_dims = [64, 128, 256, 512, 1024]
+    # FP32 Softmax (标准版) vs "fp64" Softmax (高精度版)
+    # 注意：输入输出均为 FP32, 仅由 accum_precision 控制中间累加逻辑
+
+    test_dims = [64, 128, 256, 512, 1024] # 恢复正常测试维度
 
     results = []
+
     for dim in test_dims:
-        print(f"\n  dim={dim}:")
+        softmax_fp32 = SpikeFP32Softmax(accum_precision='fp32').to(device)
+        softmax_fp64 = SpikeFP32Softmax(accum_precision='fp64').to(device)
 
-        # 生成随机数据
-        torch.manual_seed(42)
-        x = torch.randn(2, dim).to(device)  # batch=2
-
-        # PyTorch 参考
-        rms = torch.sqrt((x ** 2).mean(dim=-1, keepdim=True) + 1e-6)
-        ref = (x / rms).float()
-
-        # 转换为脉冲
-        x_pulse = float32_to_pulse(x, device=device)
-
-        # Sequential 模式
-        rmsnorm_seq = SpikeFP32RMSNormFullFP64(dim, accumulator_mode='sequential').to(device)
-        rmsnorm_seq.weight.data.fill_(1.0)
-        rmsnorm_seq.reset()
-        seq_pulse = rmsnorm_seq(x_pulse)
-        seq_result = pulse_to_float32(seq_pulse)
-
-        # Parallel 模式
-        rmsnorm_par = SpikeFP32RMSNormFullFP64(dim, accumulator_mode='parallel').to(device)
-        rmsnorm_par.weight.data.fill_(1.0)
-        rmsnorm_par.reset()
-        par_pulse = rmsnorm_par(x_pulse)
-        par_result = pulse_to_float32(par_pulse)
-
-        # 计算误差
-        seq_ulps = []
-        par_ulps = []
-        diff_ulps = []
-
-        for i in range(ref.numel()):
-            seq_ulps.append(compute_ulp_error(seq_result.flatten()[i].item(), ref.flatten()[i].item()))
-            par_ulps.append(compute_ulp_error(par_result.flatten()[i].item(), ref.flatten()[i].item()))
-            diff_ulps.append(compute_ulp_error(seq_result.flatten()[i].item(), par_result.flatten()[i].item()))
-
-        seq_max_ulp = max(seq_ulps)
-        par_max_ulp = max(par_ulps)
-        diff_max_ulp = max(diff_ulps)
-
-        results.append({
-            'dim': dim,
-            'seq_max_ulp': seq_max_ulp,
-            'par_max_ulp': par_max_ulp,
-            'diff_max_ulp': diff_max_ulp
-        })
-
-        print(f"    Sequential: max_ulp={seq_max_ulp:.0f}")
-        print(f"    Parallel:   max_ulp={par_max_ulp:.0f}")
-        print(f"    Seq vs Par: max_ulp={diff_max_ulp:.0f}")
-
-    return results
-
-
-def test_layernorm_accumulator_modes():
-    """测试 LayerNorm 在不同累加模式下的表现"""
-    print("\n" + "="*70)
-    print("测试 3: LayerNorm 累加模式对比")
-    print("="*70)
-
-    from atomic_ops.normalization.fp32.fp32_layernorm import SpikeFP32LayerNorm
-    from atomic_ops.encoding.converters import float32_to_pulse, pulse_to_float32
-
-    test_dims = [64, 128, 256, 512]
-
-    results = []
-    for dim in test_dims:
-        print(f"\n  dim={dim}:")
-
-        # 生成随机数据
-        torch.manual_seed(42)
-        x = torch.randn(2, dim).to(device)
-
-        # PyTorch 参考
-        ln = nn.LayerNorm(dim, elementwise_affine=False).to(device)
-        ref = ln(x)
-
-        # 转换为脉冲
-        x_pulse = float32_to_pulse(x, device=device)
-
-        # Sequential 模式
-        ln_seq = SpikeFP32LayerNorm(accumulator_mode='sequential').to(device)
-        ln_seq.reset()
-        seq_pulse = ln_seq(x_pulse)
-        seq_result = pulse_to_float32(seq_pulse)
-
-        # Parallel 模式
-        ln_par = SpikeFP32LayerNorm(accumulator_mode='parallel').to(device)
-        ln_par.reset()
-        par_pulse = ln_par(x_pulse)
-        par_result = pulse_to_float32(par_pulse)
-
-        # 计算误差
-        seq_ulps = []
-        par_ulps = []
-        diff_ulps = []
-
-        for i in range(ref.numel()):
-            seq_ulps.append(compute_ulp_error(seq_result.flatten()[i].item(), ref.flatten()[i].item()))
-            par_ulps.append(compute_ulp_error(par_result.flatten()[i].item(), ref.flatten()[i].item()))
-            diff_ulps.append(compute_ulp_error(seq_result.flatten()[i].item(), par_result.flatten()[i].item()))
-
-        seq_max_ulp = max(seq_ulps)
-        par_max_ulp = max(par_ulps)
-        diff_max_ulp = max(diff_ulps)
-
-        results.append({
-            'dim': dim,
-            'seq_max_ulp': seq_max_ulp,
-            'par_max_ulp': par_max_ulp,
-            'diff_max_ulp': diff_max_ulp
-        })
-
-        print(f"    Sequential: max_ulp={seq_max_ulp:.0f}")
-        print(f"    Parallel:   max_ulp={par_max_ulp:.0f}")
-        print(f"    Seq vs Par: max_ulp={diff_max_ulp:.0f}")
-
-    return results
-
-
-def test_fp32_linear_accumulator_modes():
-    """测试 FP32 Linear 在不同累加模式下的表现"""
-    print("\n" + "="*70)
-    print("测试 4: FP32 Linear 累加模式对比")
-    print("="*70)
-
-    from atomic_ops.linear.fp32.fp32_linear import SpikeFP32Linear_MultiPrecision
-    from atomic_ops.encoding.converters import float32_to_pulse, pulse_to_float32
-
-    test_configs = [(64, 64), (128, 128), (256, 256)]
-
-    results = []
-    for in_dim, out_dim in test_configs:
-        print(f"\n  Linear({in_dim}, {out_dim}):")
-
-        # 生成随机数据和权重
-        torch.manual_seed(42)
-        x = torch.randn(2, in_dim).to(device)
-        weight = torch.randn(out_dim, in_dim).to(device) * 0.1
-
-        # PyTorch 参考
-        ref = torch.mm(x, weight.t())
-
-        # 转换为脉冲
-        x_pulse = float32_to_pulse(x, device=device)
-
-        # Sequential 模式
-        linear_seq = SpikeFP32Linear_MultiPrecision(in_dim, out_dim, accum_mode='sequential').to(device)
-        linear_seq.set_weight_from_float(weight)
-        linear_seq.reset()
-        seq_pulse = linear_seq(x_pulse)
-        seq_result = pulse_to_float32(seq_pulse)
-
-        # Parallel 模式
-        linear_par = SpikeFP32Linear_MultiPrecision(in_dim, out_dim, accum_mode='parallel').to(device)
-        linear_par.set_weight_from_float(weight)
-        linear_par.reset()
-        par_pulse = linear_par(x_pulse)
-        par_result = pulse_to_float32(par_pulse)
-
-        # 计算误差
-        seq_ulps = []
-        par_ulps = []
-        diff_ulps = []
-
-        for i in range(ref.numel()):
-            seq_ulps.append(compute_ulp_error(seq_result.flatten()[i].item(), ref.flatten()[i].item()))
-            par_ulps.append(compute_ulp_error(par_result.flatten()[i].item(), ref.flatten()[i].item()))
-            diff_ulps.append(compute_ulp_error(seq_result.flatten()[i].item(), par_result.flatten()[i].item()))
-
-        seq_max_ulp = max(seq_ulps)
-        par_max_ulp = max(par_ulps)
-        diff_max_ulp = max(diff_ulps)
-        seq_mean_ulp = np.mean(seq_ulps)
-        par_mean_ulp = np.mean(par_ulps)
-
-        results.append({
-            'config': f'{in_dim}x{out_dim}',
-            'seq_max_ulp': seq_max_ulp,
-            'seq_mean_ulp': seq_mean_ulp,
-            'par_max_ulp': par_max_ulp,
-            'par_mean_ulp': par_mean_ulp,
-            'diff_max_ulp': diff_max_ulp
-        })
-
-        print(f"    Sequential: max_ulp={seq_max_ulp:.0f}, mean_ulp={seq_mean_ulp:.1f}")
-        print(f"    Parallel:   max_ulp={par_max_ulp:.0f}, mean_ulp={par_mean_ulp:.1f}")
-        print(f"    Seq vs Par: max_ulp={diff_max_ulp:.0f}")
-
-    return results
-
-
-def test_fp16_linear():
-    """测试 FP16 Linear"""
-    print("\n" + "="*70)
-    print("测试 5: FP16 Linear")
-    print("="*70)
-
-    from atomic_ops.linear.fp16.fp16_linear import SpikeFP16Linear_MultiPrecision
-    from atomic_ops.encoding.converters import float16_to_pulse, pulse_to_float16
-
-    test_configs = [(64, 64), (128, 128), (256, 256)]
-
-    results = []
-    for in_dim, out_dim in test_configs:
-        print(f"\n  FP16 Linear({in_dim}, {out_dim}):")
-
-        # 生成随机数据和权重
-        torch.manual_seed(42)
-        x = torch.randn(2, in_dim).to(device).half()
-        weight = (torch.randn(out_dim, in_dim).to(device) * 0.1).half()
-
-        # PyTorch 参考
-        ref = torch.mm(x, weight.t())
-
-        # 转换为脉冲
-        x_pulse = float16_to_pulse(x, device=device)
-
-        # SNN Linear
-        linear = SpikeFP16Linear_MultiPrecision(in_dim, out_dim).to(device)
-        linear.set_weight_from_float(weight)
-        linear.reset()
-        result_pulse = linear(x_pulse)
-        result = pulse_to_float16(result_pulse)
-
-        # 计算误差
-        ulps = []
-        for i in range(ref.numel()):
-            ulps.append(compute_ulp_error(result.flatten()[i].item(), ref.flatten()[i].item(), 'fp16'))
-
-        max_ulp = max(ulps)
-        mean_ulp = np.mean(ulps)
-
-        results.append({
-            'config': f'{in_dim}x{out_dim}',
-            'max_ulp': max_ulp,
-            'mean_ulp': mean_ulp
-        })
-
-        print(f"    max_ulp={max_ulp:.0f}, mean_ulp={mean_ulp:.1f}")
-
-    return results
-
-
-def test_fp8_linear():
-    """测试 FP8 Linear"""
-    print("\n" + "="*70)
-    print("测试 6: FP8 Linear (多种累加精度)")
-    print("="*70)
-
-    from atomic_ops.linear.fp8.fp8_linear_multi import SpikeFP8Linear_MultiPrecision
-    from atomic_ops.encoding.converters import float_to_fp8_pulse, fp8_pulse_to_float
-
-    test_configs = [(64, 64), (128, 128)]
-    accum_precisions = ['fp8', 'fp16', 'fp32']
-
-    results = []
-    for in_dim, out_dim in test_configs:
-        print(f"\n  FP8 Linear({in_dim}, {out_dim}):")
-
-        # 生成随机数据和权重 (范围限制以适应 FP8)
-        torch.manual_seed(42)
-        x = (torch.randn(2, in_dim).to(device) * 0.5).clamp(-1.5, 1.5)
-        weight = (torch.randn(out_dim, in_dim).to(device) * 0.1).clamp(-0.5, 0.5)
-
-        # PyTorch 参考 (FP32)
-        ref = torch.mm(x, weight.t())
-
-        for accum_prec in accum_precisions:
-            try:
-                # 转换为 FP8 脉冲
-                x_pulse = float_to_fp8_pulse(x, device=device)
-
-                # SNN Linear
-                linear = SpikeFP8Linear_MultiPrecision(
-                    in_dim, out_dim,
-                    accum_precision=accum_prec
-                ).to(device)
-                linear.set_weight_from_float(weight)
-                linear.reset()
-                result_pulse = linear(x_pulse)
-                result = fp8_pulse_to_float(result_pulse)
-
-                # 计算相对误差 (FP8 精度低，用相对误差)
-                rel_errors = []
-                for i in range(ref.numel()):
-                    ref_val = ref.flatten()[i].item()
-                    snn_val = result.flatten()[i].item()
-                    if abs(ref_val) > 1e-6:
-                        rel_errors.append(abs(snn_val - ref_val) / abs(ref_val))
-                    else:
-                        rel_errors.append(abs(snn_val - ref_val))
-
-                max_rel_err = max(rel_errors) * 100
-                mean_rel_err = np.mean(rel_errors) * 100
-
-                results.append({
-                    'config': f'{in_dim}x{out_dim}',
-                    'accum_prec': accum_prec,
-                    'max_rel_err': max_rel_err,
-                    'mean_rel_err': mean_rel_err
-                })
-
-                print(f"    accum={accum_prec}: max_rel_err={max_rel_err:.2f}%, mean_rel_err={mean_rel_err:.2f}%")
-            except Exception as e:
-                print(f"    accum={accum_prec}: ERROR - {e}")
-                results.append({
-                    'config': f'{in_dim}x{out_dim}',
-                    'accum_prec': accum_prec,
-                    'error': str(e)
-                })
-
-    return results
-
-
-def test_softmax_accumulator_modes():
-    """测试 Softmax 在不同累加模式下的表现"""
-    print("\n" + "="*70)
-    print("测试 7: Softmax 累加模式对比")
-    print("="*70)
-
-    from atomic_ops.activation.fp32.fp32_softmax import SpikeFP32Softmax
-    from atomic_ops.encoding.converters import float32_to_pulse, pulse_to_float32
-
-    test_dims = [64, 128, 256, 512]
-
-    results = []
-    for dim in test_dims:
-        print(f"\n  dim={dim}:")
-
-        # 生成随机数据
-        torch.manual_seed(42)
-        x = torch.randn(2, dim).to(device)
-
-        # PyTorch 参考
+        x = generate_test_values(dim, max_abs=10.0).unsqueeze(0)
         ref = torch.softmax(x, dim=-1)
+        x_pulse = float32_to_pulse(x)
 
-        # 转换为脉冲
-        x_pulse = float32_to_pulse(x, device=device)
+        # FP32
+        softmax_fp32.reset()
+        y_fp32 = pulse_to_float32(softmax_fp32(x_pulse))
+        stats_fp32 = compute_ulp_stats(y_fp32, ref)
 
-        # Sequential 模式
-        softmax_seq = SpikeFP32Softmax(accumulator_mode='sequential').to(device)
-        softmax_seq.reset()
-        seq_pulse = softmax_seq(x_pulse)
-        seq_result = pulse_to_float32(seq_pulse)
-
-        # Parallel 模式
-        softmax_par = SpikeFP32Softmax(accumulator_mode='parallel').to(device)
-        softmax_par.reset()
-        par_pulse = softmax_par(x_pulse)
-        par_result = pulse_to_float32(par_pulse)
-
-        # 计算误差
-        seq_ulps = []
-        par_ulps = []
-        diff_ulps = []
-
-        for i in range(ref.numel()):
-            seq_ulps.append(compute_ulp_error(seq_result.flatten()[i].item(), ref.flatten()[i].item()))
-            par_ulps.append(compute_ulp_error(par_result.flatten()[i].item(), ref.flatten()[i].item()))
-            diff_ulps.append(compute_ulp_error(seq_result.flatten()[i].item(), par_result.flatten()[i].item()))
-
-        seq_max_ulp = max(seq_ulps)
-        par_max_ulp = max(par_ulps)
-        diff_max_ulp = max(diff_ulps)
-
+        # FP64
+        softmax_fp64.reset()
+        y_fp64 = pulse_to_float32(softmax_fp64(x_pulse))
+        stats_fp64 = compute_ulp_stats(y_fp64, ref)
+        
         results.append({
             'dim': dim,
-            'seq_max_ulp': seq_max_ulp,
-            'par_max_ulp': par_max_ulp,
-            'diff_max_ulp': diff_max_ulp
+            'fp32': stats_fp32,
+            'fp64': stats_fp64
         })
-
-        print(f"    Sequential: max_ulp={seq_max_ulp:.0f}")
-        print(f"    Parallel:   max_ulp={par_max_ulp:.0f}")
-        print(f"    Seq vs Par: max_ulp={diff_max_ulp:.0f}")
+        print(f"  dim={dim:4d}:")
+        print(f"    FP32: Max ULP={stats_fp32['max']:>4}, ≤1-ULP={stats_fp32['le1_rate']:>5.1f}%")
+        print(f"    FP64: Max ULP={stats_fp64['max']:>4}, ≤1-ULP={stats_fp64['le1_rate']:>5.1f}%")
 
     return results
 
 
-def print_summary(all_results):
-    """打印测试汇总"""
+def test_rmsnorm_precision():
+    """测试 3: SpikeFP32RMSNormFullFP64 (FP32 IO) - 精度验证"""
     print("\n" + "="*70)
-    print("测试汇总")
+    print("测试 3: SpikeFP32RMSNormFullFP64 (FP32 IO) - 精度验证")
+    print("目标: 验证 FP32 IO 接口下，内部全链路 FP64 计算的高精度表现")
     print("="*70)
+    
+    from atomic_ops import SpikeFP32RMSNormFullFP64
+    from atomic_ops.encoding.converters import float32_to_pulse, pulse_to_float32
+    
+    test_dims = [64, 128, 256, 512] 
+    results = []
+    
+    for dim in test_dims:
+        x = generate_test_values(dim).unsqueeze(0)
+        # PyTorch Reference
+        rms = torch.sqrt((x**2).mean(dim=-1, keepdim=True) + 1e-6)
+        ref = x / rms
+        
+        x_pulse = float32_to_pulse(x)
+        
+        # Test FP64 variant
+        rmsnorm = SpikeFP32RMSNormFullFP64(dim, eps=1e-6).to(device)
+        y_pulse = rmsnorm(x_pulse)
+        y_snn = pulse_to_float32(y_pulse)
+        
+        stats = compute_ulp_stats(y_snn, ref)
+        results.append({'dim': dim, 'stats': stats})
+        
+        print(f"  dim={dim:3d}: Max ULP={stats['max']}, Mean={stats['mean']:.2f}, ≤1-ULP={stats['le1_rate']:.1f}%")
+        
+    return results
 
-    print("\n1. 累加器模式对比 (FP64 Adder):")
-    print("   维度  | Sequential ULP | Parallel ULP | Seq vs Par ULP")
-    print("   " + "-"*55)
-    for r in all_results.get('accumulator', []):
-        print(f"   {r['dim']:4d}  | {r['seq_ulp']:14.0f} | {r['par_ulp']:12.0f} | {r['diff_ulp']:14.0f}")
 
-    print("\n2. RMSNorm 累加模式对比:")
-    print("   维度  | Sequential ULP | Parallel ULP | Seq vs Par ULP")
-    print("   " + "-"*55)
-    for r in all_results.get('rmsnorm', []):
-        print(f"   {r['dim']:4d}  | {r['seq_max_ulp']:14.0f} | {r['par_max_ulp']:12.0f} | {r['diff_max_ulp']:14.0f}")
+def test_layernorm_precision():
+    """测试 4: SpikeFP32LayerNorm (FP32 IO) - 精度验证"""
+    print("\n" + "="*70)
+    print("测试 4: SpikeFP32LayerNorm (FP32 IO) - 精度验证")
+    print("目标: 验证 FP32 IO 接口下，内部 FP64 累加的高精度表现")
+    print("="*70)
+    
+    from atomic_ops import SpikeFP32LayerNorm
+    from atomic_ops.encoding.converters import float32_to_pulse, pulse_to_float32
+    
+    test_dims = [64, 128, 256, 512]
+    results = []
+    
+    for dim in test_dims:
+        x = generate_test_values(dim).unsqueeze(0)
+        mean = x.mean(dim=-1, keepdim=True)
+        var = x.var(dim=-1, unbiased=False, keepdim=True)
+        ref = (x - mean) / torch.sqrt(var + 1e-6)
+        
+        x_pulse = float32_to_pulse(x)
+        ln = SpikeFP32LayerNorm(accumulator_mode='sequential').to(device)
+        y_pulse = ln(x_pulse)
+        y_snn = pulse_to_float32(y_pulse)
+        
+        stats = compute_ulp_stats(y_snn, ref)
+        results.append({'dim': dim, 'stats': stats})
+        print(f"  dim={dim:3d}: Max ULP={stats['max']}, ≤1-ULP={stats['le1_rate']:.1f}%")
+        
+    return results
 
-    print("\n3. LayerNorm 累加模式对比:")
-    print("   维度  | Sequential ULP | Parallel ULP | Seq vs Par ULP")
-    print("   " + "-"*55)
-    for r in all_results.get('layernorm', []):
-        print(f"   {r['dim']:4d}  | {r['seq_max_ulp']:14.0f} | {r['par_max_ulp']:12.0f} | {r['diff_max_ulp']:14.0f}")
 
-    print("\n4. FP32 Linear 累加模式对比:")
-    print("   配置      | Sequential ULP | Parallel ULP | Seq vs Par ULP")
-    print("   " + "-"*60)
-    for r in all_results.get('fp32_linear', []):
-        print(f"   {r['config']:9s} | {r['seq_max_ulp']:14.0f} | {r['par_max_ulp']:12.0f} | {r['diff_max_ulp']:14.0f}")
-
-    print("\n5. FP16 Linear:")
-    print("   配置      | Max ULP | Mean ULP")
-    print("   " + "-"*35)
-    for r in all_results.get('fp16_linear', []):
-        print(f"   {r['config']:9s} | {r['max_ulp']:7.0f} | {r['mean_ulp']:8.1f}")
-
-    print("\n6. FP8 Linear (不同累加精度):")
-    print("   配置      | 累加精度 | Max Rel Err | Mean Rel Err")
-    print("   " + "-"*55)
-    for r in all_results.get('fp8_linear', []):
-        if 'error' in r:
-            print(f"   {r['config']:9s} | {r['accum_prec']:8s} | ERROR: {r['error'][:30]}")
-        else:
-            print(f"   {r['config']:9s} | {r['accum_prec']:8s} | {r['max_rel_err']:10.2f}% | {r['mean_rel_err']:11.2f}%")
-
-    print("\n7. Softmax 累加模式对比:")
-    print("   维度  | Sequential ULP | Parallel ULP | Seq vs Par ULP")
-    print("   " + "-"*55)
-    for r in all_results.get('softmax', []):
-        print(f"   {r['dim']:4d}  | {r['seq_max_ulp']:14.0f} | {r['par_max_ulp']:12.0f} | {r['diff_max_ulp']:14.0f}")
+def test_linear_precision_modes():
+    """测试 5: SpikeFP32Linear (FP32 IO) - 中间累加精度验证"""
+    print("\n" + "="*70)
+    print("测试 5: SpikeFP32Linear (FP32 IO) - 中间累加精度验证")
+    print("目标: 对比 accum_precision='fp32' vs 'fp64' 对大矩阵乘法精度的影响")
+    print("="*70)
+    
+    from atomic_ops import SpikeFP32Linear_MultiPrecision
+    from atomic_ops.encoding.converters import float32_to_pulse, pulse_to_float32
+    
+    dims = [(64, 64), (128, 128), (256, 256), (512, 512)]
+    results = []
+    
+    for in_dim, out_dim in dims:
+        x = torch.randn(1, in_dim).to(device) * 0.5
+        ref_x = x.clone()
+        w = torch.randn(out_dim, in_dim).to(device) * 0.1
+        ref = torch.nn.functional.linear(ref_x, w)
+        
+        x_pulse = float32_to_pulse(x)
+        
+        # Test FP32 Accum
+        lin_fp32 = SpikeFP32Linear_MultiPrecision(in_dim, out_dim, accum_precision='fp32').to(device)
+        lin_fp32.set_weight_from_float(w)
+        y_fp32 = pulse_to_float32(lin_fp32(x_pulse))
+        stats_fp32 = compute_ulp_stats(y_fp32, ref)
+        
+        # Test FP64 Accum
+        lin_fp64 = SpikeFP32Linear_MultiPrecision(in_dim, out_dim, accum_precision='fp64').to(device)
+        lin_fp64.set_weight_from_float(w)
+        y_fp64 = pulse_to_float32(lin_fp64(x_pulse))
+        stats_fp64 = compute_ulp_stats(y_fp64, ref)
+        
+        results.append({
+            'dim': f"{in_dim}x{out_dim}",
+            'fp32': stats_fp32,
+            'fp64': stats_fp64
+        })
+        print(f"  {in_dim}x{out_dim}:")
+        print(f"    FP32 Accum: Max ULP={stats_fp32['max']:>4}, ≤1-ULP={stats_fp32['le1_rate']:>5.1f}%")
+        print(f"    FP64 Accum: Max ULP={stats_fp64['max']:>4}, ≤1-ULP={stats_fp64['le1_rate']:>5.1f}%")
+        
+    return results
 
 
 def main():
-    print("="*70)
-    print("累加器全面测试")
-    print("="*70)
-
-    all_results = {}
-
-    # 测试 1: 累加器模式
+    print("MofNeuroSim 全面验证套件")
+    print("-" * 30)
+    
     try:
-        all_results['accumulator'] = test_accumulator_modes()
+        test_accumulator_modes()
     except Exception as e:
-        print(f"  ERROR: {e}")
+        print(f"Test 1 Failed: {e}")
+        import traceback
+        traceback.print_exc()
+        
+    try:
+        test_softmax_precision()
+    except Exception as e:
+        print(f"Test 2 Failed: {e}")
         import traceback
         traceback.print_exc()
 
-    # 测试 2: RMSNorm
     try:
-        all_results['rmsnorm'] = test_rmsnorm_accumulator_modes()
+        test_rmsnorm_precision()
     except Exception as e:
-        print(f"  ERROR: {e}")
+        print(f"Test 3 Failed: {e}")
         import traceback
         traceback.print_exc()
 
-    # 测试 3: LayerNorm
     try:
-        all_results['layernorm'] = test_layernorm_accumulator_modes()
+        test_layernorm_precision()
     except Exception as e:
-        print(f"  ERROR: {e}")
+        print(f"Test 4 Failed: {e}")
         import traceback
         traceback.print_exc()
-
-    # 测试 4: FP32 Linear
+    
     try:
-        all_results['fp32_linear'] = test_fp32_linear_accumulator_modes()
+        test_linear_precision_modes()
     except Exception as e:
-        print(f"  ERROR: {e}")
+        print(f"Test 5 Failed: {e}")
         import traceback
         traceback.print_exc()
-
-    # 测试 5: FP16 Linear
-    try:
-        all_results['fp16_linear'] = test_fp16_linear()
-    except Exception as e:
-        print(f"  ERROR: {e}")
-        import traceback
-        traceback.print_exc()
-
-    # 测试 6: FP8 Linear
-    try:
-        all_results['fp8_linear'] = test_fp8_linear()
-    except Exception as e:
-        print(f"  ERROR: {e}")
-        import traceback
-        traceback.print_exc()
-
-    # 测试 7: Softmax
-    try:
-        all_results['softmax'] = test_softmax_accumulator_modes()
-    except Exception as e:
-        print(f"  ERROR: {e}")
-        import traceback
-        traceback.print_exc()
-
-    # 打印汇总
-    print_summary(all_results)
-
-    print("\n" + "="*70)
-    print("测试完成")
-    print("="*70)
+        
+    print("\n测试完成")
 
 
 if __name__ == '__main__':

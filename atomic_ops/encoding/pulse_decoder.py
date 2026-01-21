@@ -106,10 +106,14 @@ class PulseFloatingPointDecoder(nn.Module):
             mant_val = mant_val + m_bits[..., i] * (2 ** (-(i + 1)))
         
         # 检测特殊情况
+        max_exp = (2 ** self.E_bits) - 1
+        is_max_exp = (exp_val == max_exp)
         is_zero_exp = (exp_val == 0)
         is_zero_mant = (mant_val == 0)
         is_true_zero = is_zero_exp & is_zero_mant
         is_subnormal = is_zero_exp & (~is_zero_mant)
+        is_inf = is_max_exp & is_zero_mant
+        is_nan = is_max_exp & (~is_zero_mant)
         
         # 计算浮点值
         # Normal: (-1)^S × 2^(E-bias) × (1 + M)
@@ -118,12 +122,14 @@ class PulseFloatingPointDecoder(nn.Module):
         # Normal 情况
         normal_val = (2.0 ** (exp_val - self.bias)) * (1.0 + mant_val)
         
-        # Subnormal 情况: 2^(1-bias) × M = 2^(-6) × M
+        # Subnormal 情况: 1-bias
         subnormal_val = (2.0 ** (1 - self.bias)) * mant_val
         
         # 选择正确的值
         abs_val = torch.where(is_subnormal, subnormal_val, normal_val)
         abs_val = torch.where(is_true_zero, torch.zeros_like(abs_val), abs_val)
+        abs_val = torch.where(is_inf, torch.tensor(float('inf'), device=device), abs_val)
+        abs_val = torch.where(is_nan, torch.tensor(float('nan'), device=device), abs_val)
         
         # 应用符号
         sign = 1.0 - 2.0 * s  # s=0 → +1, s=1 → -1
@@ -177,14 +183,20 @@ class PulseFP16Decoder(nn.Module):
         
         is_zero_exp = (exp_val == 0)
         is_zero_mant = (mant_val == 0)
+        is_max_exp = (exp_val == (2 ** self.E_bits) - 1)
+        
         is_true_zero = is_zero_exp & is_zero_mant
         is_subnormal = is_zero_exp & (~is_zero_mant)
+        is_inf = is_max_exp & is_zero_mant
+        is_nan = is_max_exp & (~is_zero_mant)
         
         normal_val = (2.0 ** (exp_val - self.bias)) * (1.0 + mant_val)
         subnormal_val = (2.0 ** (1 - self.bias)) * mant_val
         
         abs_val = torch.where(is_subnormal, subnormal_val, normal_val)
         abs_val = torch.where(is_true_zero, torch.zeros_like(abs_val), abs_val)
+        abs_val = torch.where(is_inf, torch.tensor(float('inf'), device=device), abs_val)
+        abs_val = torch.where(is_nan, torch.tensor(float('nan'), device=device), abs_val)
         
         sign = 1.0 - 2.0 * s
         return sign * abs_val
@@ -234,14 +246,20 @@ class PulseFP32Decoder(nn.Module):
         
         is_zero_exp = (exp_val == 0)
         is_zero_mant = (mant_val == 0)
+        is_max_exp = (exp_val == (2 ** self.E_bits) - 1)
+        
         is_true_zero = is_zero_exp & is_zero_mant
         is_subnormal = is_zero_exp & (~is_zero_mant)
+        is_inf = is_max_exp & is_zero_mant
+        is_nan = is_max_exp & (~is_zero_mant)
         
         normal_val = (2.0 ** (exp_val - self.bias)) * (1.0 + mant_val)
         subnormal_val = (2.0 ** (1 - self.bias)) * mant_val
         
         abs_val = torch.where(is_subnormal, subnormal_val, normal_val)
         abs_val = torch.where(is_true_zero, torch.zeros_like(abs_val), abs_val)
+        abs_val = torch.where(is_inf, torch.tensor(float('inf'), device=device), abs_val)
+        abs_val = torch.where(is_nan, torch.tensor(float('nan'), device=device), abs_val)
         
         sign = 1.0 - 2.0 * s
         return sign * abs_val
