@@ -397,10 +397,11 @@ class PulseFloatingPointEncoder(nn.Module):
             nan_mant[..., 0] = 1.0 # Set MSB to 1
         
         special_e = all_ones_exp
+        # flat_x 是 [n_samples, 1]，所以 is_nan 也是 [n_samples, 1]，可以正确广播到 [n_samples, M_bits]
         special_m = torch.where(is_nan.bool(), nan_mant, torch.zeros_like(m_reg))
 
         # Override Normal Results
-        # e_out = not_special * e_out + is_special * special_e
+        # is_special 是 [n_samples, 1]，可以正确广播到 [n_samples, E_bits/M_bits]
         e_out = torch.where(is_special.bool(), special_e, e_out)
         m_reg = torch.where(is_special.bool(), special_m, m_reg)
         # s_out for NaN is usually 0, for Inf follows inputs.
