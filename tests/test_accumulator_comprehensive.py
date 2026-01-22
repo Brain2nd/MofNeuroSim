@@ -69,13 +69,19 @@ def compute_ulp_stats(snn_tensor, ref_tensor, precision='fp32'):
     # 过滤掉非有限值的 ULP (通常是 Inf/NaN)
     valid_ulps = [u for u in ulps if np.isfinite(u)]
     
-    if not valid_ulps:
-        return {'max': -1, 'mean': -1, 'le1_rate': 0.0}
-        
+    # 计算绝对误差
+    abs_errs = np.abs(snn_flat - ref_flat)
+    valid_abs_errs = abs_errs[np.isfinite(abs_errs)]
+    
+    if len(valid_abs_errs) == 0:
+        return {'max': -1, 'mean': -1, 'le1_rate': 0.0, 'max_abs': -1, 'mean_abs': -1}
+
     return {
         'max': max(valid_ulps),
         'mean': np.mean(valid_ulps),
-        'le1_rate': sum(1 for u in valid_ulps if u <= 1) / len(valid_ulps) * 100
+        'le1_rate': sum(1 for u in valid_ulps if u <= 1) / len(valid_ulps) * 100,
+        'max_abs': np.max(valid_abs_errs),
+        'mean_abs': np.mean(valid_abs_errs)
     }
 
 
@@ -141,12 +147,17 @@ def test_accumulator_modes():
         seq_ulp = compute_ulp_error(seq_result, ref_sum, 'fp32')
         par_ulp = compute_ulp_error(par_result, ref_sum, 'fp32')
 
+        seq_abs = abs(seq_result - ref_sum)
+        par_abs = abs(par_result - ref_sum)
+
         results.append({
             'dim': dim,
             'seq_ulp': seq_ulp,
-            'par_ulp': par_ulp
+            'par_ulp': par_ulp,
+            'seq_abs': seq_abs,
+            'par_abs': par_abs
         })
-        print(f"  dim={dim:3d}: Seq ULP={seq_ulp}, Par ULP={par_ulp}")
+        print(f"  dim={dim:3d}: Seq ULP={seq_ulp} (Abs={seq_abs:.2e}), Par ULP={par_ulp} (Abs={par_abs:.2e})")
 
     return results
 
@@ -192,8 +203,8 @@ def test_softmax_precision():
             'fp64': stats_fp64
         })
         print(f"  dim={dim:4d}:")
-        print(f"    FP32: Max ULP={stats_fp32['max']:>4}, ≤1-ULP={stats_fp32['le1_rate']:>5.1f}%")
-        print(f"    FP64: Max ULP={stats_fp64['max']:>4}, ≤1-ULP={stats_fp64['le1_rate']:>5.1f}%")
+        print(f"    FP32: Max ULP={stats_fp32['max']:>4}, ≤1-ULP={stats_fp32['le1_rate']:>5.1f}%, Max Abs={stats_fp32['max_abs']:.2e}")
+        print(f"    FP64: Max ULP={stats_fp64['max']:>4}, ≤1-ULP={stats_fp64['le1_rate']:>5.1f}%, Max Abs={stats_fp64['max_abs']:.2e}")
 
     return results
 
@@ -227,7 +238,7 @@ def test_rmsnorm_precision():
         stats = compute_ulp_stats(y_snn, ref)
         results.append({'dim': dim, 'stats': stats})
         
-        print(f"  dim={dim:3d}: Max ULP={stats['max']}, Mean={stats['mean']:.2f}, ≤1-ULP={stats['le1_rate']:.1f}%")
+        print(f"  dim={dim:3d}: Max ULP={stats['max']}, Mean ULP={stats['mean']:.2f}, Max Abs={stats['max_abs']:.2e}")
         
     return results
 
@@ -258,7 +269,7 @@ def test_layernorm_precision():
         
         stats = compute_ulp_stats(y_snn, ref)
         results.append({'dim': dim, 'stats': stats})
-        print(f"  dim={dim:3d}: Max ULP={stats['max']}, ≤1-ULP={stats['le1_rate']:.1f}%")
+        print(f"  dim={dim:3d}: Max ULP={stats['max']}, ≤1-ULP={stats['le1_rate']:.1f}%, Max Abs={stats['max_abs']:.2e}")
         
     return results
 
@@ -302,8 +313,8 @@ def test_linear_precision_modes():
             'fp64': stats_fp64
         })
         print(f"  {in_dim}x{out_dim}:")
-        print(f"    FP32 Accum: Max ULP={stats_fp32['max']:>4}, ≤1-ULP={stats_fp32['le1_rate']:>5.1f}%")
-        print(f"    FP64 Accum: Max ULP={stats_fp64['max']:>4}, ≤1-ULP={stats_fp64['le1_rate']:>5.1f}%")
+        print(f"    FP32 Accum: Max ULP={stats_fp32['max']:>4}, ≤1-ULP={stats_fp32['le1_rate']:>5.1f}%, Max Abs={stats_fp32['max_abs']:.2e}")
+        print(f"    FP64 Accum: Max ULP={stats_fp64['max']:>4}, ≤1-ULP={stats_fp64['le1_rate']:>5.1f}%, Max Abs={stats_fp64['max_abs']:.2e}")
         
     return results
 
