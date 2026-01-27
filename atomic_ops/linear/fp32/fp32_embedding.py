@@ -187,41 +187,45 @@ class SpikeFP32Embedding(nn.Module):
             out_flat = self.weight_pulse[flat_ids]  # [N, embed_dim, 32]
             out_pulse = out_flat.view(batch_shape + (self.embed_dim, 32))
         else:
-            # 训练模式：使用 MUX 树（可微分路径）
+            # 训练模式：使用 MUX 树（可微分路径）- 向量化 batch 处理
             with torch.no_grad():
                 # Step 1: 整数 → 二进制脉冲 (边界操作)
                 addr_pulse = self._int_to_binary_pulse(token_ids)  # [..., addr_bits]
 
-                # 展平batch处理
-                addr_flat = addr_pulse.reshape(-1, self.addr_bits)
+                # 展平 batch 处理
+                addr_flat = addr_pulse.reshape(-1, self.addr_bits)  # [N, addr_bits]
                 N = addr_flat.shape[0]
 
-                results = []
+                # 向量化 MUX 树：同时处理所有 batch 元素
+                # current: [N, V, D, 32] - 每个 batch 元素都有完整的权重表副本
+                # 通过广播实现向量化
+                current = self.weight_pulse.unsqueeze(0).expand(N, -1, -1, -1)  # [N, V, D, 32]
 
-                for n in range(N):
-                    addr = addr_flat[n]  # [addr_bits]
-                    current = self.weight_pulse  # [V, D, 32]
+                for layer in range(self.addr_bits):
+                    half = current.shape[1] // 2
+                    if half == 0:
+                        break
 
-                    for layer in range(self.addr_bits):
-                        sel_bit = addr[layer]  # scalar
-                        half = current.shape[0] // 2
-                        if half == 0:
-                            break
+                    # 获取所有 batch 的选择位
+                    sel_bits = addr_flat[:, layer]  # [N]
 
-                        left = current[:half]        # [half, D, 32]
-                        right = current[half:2*half]  # [half, D, 32]
+                    # 分割左右两半
+                    left = current[:, :half]         # [N, half, D, 32]
+                    right = current[:, half:2*half]  # [N, half, D, 32]
 
-                        # 向量化MUX选择：一次处理所有 half * D * 32 位
-                        left_flat = left.reshape(-1)   # [half * D * 32]
-                        right_flat = right.reshape(-1)  # [half * D * 32]
-                        sel_expanded = sel_bit.expand_as(left_flat)  # [half * D * 32]
+                    # 向量化 MUX: 扩展 sel_bits 到 [N, half, D, 32]
+                    sel_expanded = sel_bits.view(N, 1, 1, 1).expand_as(left)
 
-                        result_flat = self.vec_mux_layers[layer](sel_expanded, right_flat, left_flat)
-                        current = result_flat.view(half, self.embed_dim, 32)
+                    # 展平进行 MUX 操作
+                    left_flat = left.reshape(-1)   # [N * half * D * 32]
+                    right_flat = right.reshape(-1)  # [N * half * D * 32]
+                    sel_flat = sel_expanded.reshape(-1)  # [N * half * D * 32]
 
-                    results.append(current.squeeze(0))
+                    result_flat = self.vec_mux_layers[layer](sel_flat, right_flat, left_flat)
+                    current = result_flat.view(N, half, self.embed_dim, 32)
 
-                out_pulse = torch.stack(results, dim=0)
+                # current: [N, 1, D, 32] -> [N, D, 32]
+                out_pulse = current.squeeze(1)
                 out_pulse = out_pulse.view(batch_shape + (self.embed_dim, 32))
 
         # 如果训练模式，用 STE 包装以支持梯度
@@ -232,29 +236,33 @@ class SpikeFP32Embedding(nn.Module):
         return out_pulse
     
     def _int_to_binary_pulse(self, x: torch.Tensor) -> torch.Tensor:
-        """整数 → 二进制脉冲 (MSB first)"""
+        """整数 → 二进制脉冲 (MSB first) - 向量化实现"""
         device = x.device
-        result = []
-        for i in range(self.addr_bits - 1, -1, -1):
-            bit = ((x >> i) & 1).float()
-            result.append(bit)
-        return torch.stack(result, dim=-1)
+        # 向量化位提取: 使用 arange + 位移
+        bit_positions = torch.arange(self.addr_bits - 1, -1, -1, device=device, dtype=torch.int64)
+        # x: [...], bit_positions: [addr_bits]
+        # 扩展 x 到 [..., 1], bit_positions 到 [addr_bits]
+        x_expanded = x.unsqueeze(-1).long()  # [..., 1]
+        # 位移并掩码
+        result = ((x_expanded >> bit_positions) & 1).float()  # [..., addr_bits]
+        return result
     
     def _float_to_fp32_pulse(self, x: torch.Tensor) -> torch.Tensor:
-        """浮点 → FP32脉冲 (纯PyTorch实现)"""
+        """浮点 → FP32脉冲 (向量化实现)"""
         device = x.device
         original_shape = x.shape
 
         # 使用 view 进行位重解释: float32 -> int32
         x_flat = x.flatten().to(torch.float32)
-        bits_int = x_flat.view(torch.int32)
+        bits_int = x_flat.view(torch.int32).long()  # [N], 转为 int64 避免位移问题
 
-        # 提取每一位 (MSB-first)
-        pulses = []
-        for i in range(31, -1, -1):
-            pulses.append(((bits_int >> i) & 1).float())
+        # 向量化位提取 (MSB-first): 使用 arange + 位移
+        bit_positions = torch.arange(31, -1, -1, device=device, dtype=torch.int64)  # [32]
+        # bits_int: [N], bit_positions: [32]
+        # 扩展: bits_int -> [N, 1], bit_positions -> [32]
+        bits_int_expanded = bits_int.unsqueeze(-1)  # [N, 1]
+        result = ((bits_int_expanded >> bit_positions) & 1).float()  # [N, 32]
 
-        result = torch.stack(pulses, dim=-1)  # [N, 32]
         return result.view(original_shape + (32,)).to(device)
     
     def reset(self):
