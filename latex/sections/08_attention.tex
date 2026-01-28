@@ -39,6 +39,38 @@ where $\mathbf{W}^Q_i, \mathbf{W}^K_i, \mathbf{W}^V_i$ denote the learned projec
 \paragraph{SNN Implementation}
 The computation proceeds as: apply SNN linear layers (Section~\ref{sec:linear}) to compute projections $\mathbf{Q}_i = \mathbf{X}\mathbf{W}^Q_i$, $\mathbf{K}_i = \mathbf{X}\mathbf{W}^K_i$, $\mathbf{V}_i = \mathbf{X}\mathbf{W}^V_i$ for each head, compute attention for each head in parallel, concatenate head outputs along the feature dimension, then apply output projection ($\mathbf{O} = \text{Concat}(\ldots)\mathbf{W}^O$).
 
+\subsubsection{Grouped Query Attention (GQA)}
+\label{sec:gqa}
+
+GQA reduces memory and computation by sharing key-value heads across multiple query heads as given by Equation~\ref{eq:gqa}:
+
+\begin{equation}
+\text{GQA}(\mathbf{Q}, \mathbf{K}, \mathbf{V}) = \text{Attention}(\mathbf{Q}_i, \mathbf{K}_{g(i)}, \mathbf{V}_{g(i)})
+\label{eq:gqa}
+\end{equation}
+where $g(i) = \lfloor i \cdot n_{kv} / n_q \rfloor$ maps query head $i$ to its corresponding key-value head, $n_q$ denotes the number of query heads, and $n_{kv}$ denotes the number of key-value heads.
+
+\paragraph{SNN Implementation}
+Key-value tensors are repeated to match query heads as given by Equation~\ref{eq:gqa_repeat}:
+
+\begin{equation}
+\mathbf{K}_{\text{expanded}} = \text{repeat}(\mathbf{K}, n_q / n_{kv})
+\label{eq:gqa_repeat}
+\end{equation}
+where $n_q / n_{kv}$ denotes the number of groups. During backward, gradients from repeated heads are summed via parallel tree reduction.
+
+\subsubsection{QK Normalization}
+\label{sec:qk_norm}
+
+Modern architectures (e.g., Qwen3) apply RMSNorm to query and key vectors before RoPE as given by Equation~\ref{eq:qk_norm}:
+
+\begin{align}
+\mathbf{Q}_{\text{norm}} &= \text{RMSNorm}(\mathbf{Q}) \nonumber \\
+\mathbf{K}_{\text{norm}} &= \text{RMSNorm}(\mathbf{K})
+\label{eq:qk_norm}
+\end{align}
+where the normalization is applied per-head along the head dimension. This stabilizes attention scores and improves training dynamics.
+
 \subsubsection{Rotary Position Embedding (RoPE)}
 \label{sec:rope}
 

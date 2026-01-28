@@ -45,6 +45,33 @@ MofNeuroSim supports multiple training modes through the \texttt{TrainingMode} e
     \item \textbf{TrainingMode.TEMPORAL}: Temporal dynamics training (future extension). Exploits spike timing for learning.
 \end{itemize}
 
+\subsubsection{Implemented STE Functions}
+
+The framework provides 16 STE functions covering all common neural network operations:
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Category} & \textbf{STE Functions} \\
+\midrule
+Linear & \texttt{STELinearFunction}, \texttt{STEEmbeddingFunction} \\
+Normalization & \texttt{STERMSNormFunction}, \texttt{STELayerNormFunction} \\
+Activation & \texttt{STEExpFunction}, \texttt{STESigmoidFunction}, \\
+           & \texttt{STETanhFunction}, \texttt{STESiLUFunction}, \\
+           & \texttt{STEGELUFunction}, \texttt{STESoftmaxFunction}, \\
+           & \texttt{STEReLUFunction} \\
+Arithmetic & \texttt{STEMulFunction}, \texttt{STEAddFunction} \\
+Control & \texttt{STEMUXFunction} \\
+Position & \texttt{STERoPEFunction} \\
+Boundary & \texttt{STEDecodeFunction} \\
+\bottomrule
+\end{tabular}
+\caption{Complete list of STE functions in MofNeuroSim}
+\label{tab:ste_functions}
+\end{table}
+
 \subsubsection{Pure Pulse Architecture}
 
 In STE training mode, the entire computation graph operates in the pulse domain as illustrated by Equation~\ref{eq:pulse_graph}:
@@ -103,27 +130,81 @@ PulseSGD with momentum is given by Equation~\ref{eq:pulse_momentum}:
 \end{align}
 where $\mathbf{v}^{(t)}$ denotes the velocity at iteration $t$, $\beta$ denotes the momentum coefficient, $\nabla \mathcal{L}^{(t)}$ denotes the gradient at iteration $t$, $\eta$ denotes the learning rate, and $\text{encode}(\cdot)$ denotes the pulse encoding function.
 
+\subsubsection{SNN Backward Components}
+
+All backward computations share a set of SNN components managed by a singleton \texttt{SNNBackwardComponents} class. This includes:
+
+\begin{itemize}
+    \item \textbf{VecMul}: Element-wise multiplication
+    \item \textbf{VecAdd/VecSub}: Element-wise addition/subtraction
+    \item \textbf{VecDiv}: Element-wise division
+    \item \textbf{MatMulT}: Matrix multiplication with transposed weight
+    \item \textbf{OuterProduct}: Outer product for weight gradients
+    \item \textbf{VecAND}: Bitwise AND for masking operations
+\end{itemize}
+
+\subsubsection{Parallel Tree Reduction}
+
+Sum operations in backward passes use parallel tree reduction as given by Equation~\ref{eq:tree_reduce}:
+
+\begin{equation}
+\text{reduce}(\{x_1, \ldots, x_n\}) = \text{reduce}(\{x_1+x_2, x_3+x_4, \ldots\})
+\label{eq:tree_reduce}
+\end{equation}
+where pairs are summed in parallel at each level, reducing depth from $O(n)$ to $O(\log n)$.
+
 \subsubsection{Gradient Flow Through SNN Layers}
 
 \paragraph{Linear Layer}
-For $y = \mathbf{x}^T \mathbf{w}$, the gradients are computed as given by Equation~\ref{eq:linear_grad}:
+For $\mathbf{y} = \mathbf{x} \mathbf{W}^T$, the gradients are computed as given by Equation~\ref{eq:linear_grad}:
 
 \begin{align}
-\frac{\partial \mathcal{L}}{\partial \mathbf{w}} &= \mathbf{x} \cdot \frac{\partial \mathcal{L}}{\partial y} \nonumber \\
-\frac{\partial \mathcal{L}}{\partial \mathbf{x}} &= \mathbf{w} \cdot \frac{\partial \mathcal{L}}{\partial y}
+\frac{\partial \mathcal{L}}{\partial \mathbf{W}} &= \left(\frac{\partial \mathcal{L}}{\partial \mathbf{y}}\right)^T \mathbf{x} \nonumber \\
+\frac{\partial \mathcal{L}}{\partial \mathbf{x}} &= \frac{\partial \mathcal{L}}{\partial \mathbf{y}} \mathbf{W}
 \label{eq:linear_grad}
 \end{align}
-where $\mathcal{L}$ denotes the loss, $\mathbf{w}$ denotes the weight vector, $\mathbf{x}$ denotes the input vector, $y$ denotes the output, and $\frac{\partial \mathcal{L}}{\partial y}$ denotes the upstream gradient. These matrix multiplications use the same SNN operators as forward pass.
+where $\mathcal{L}$ denotes the loss, $\mathbf{W}$ denotes the weight matrix, $\mathbf{x}$ denotes the input, $\mathbf{y}$ denotes the output, and $\frac{\partial \mathcal{L}}{\partial \mathbf{y}}$ denotes the upstream gradient. These matrix multiplications use the same SNN operators as forward pass.
 
 \paragraph{Activation Functions}
 Activation gradients are computed using SNN arithmetic:
 
 \begin{itemize}
-    \item \textbf{Sigmoid}: $\sigma'(x) = \sigma(x)(1 - \sigma(x))$
-    \item \textbf{Tanh}: $\tanh'(x) = 1 - \tanh^2(x)$
-    \item \textbf{GELU}: $\text{GELU}'(x) = \sigma(1.702x) + 1.702x \cdot \sigma(1.702x)(1 - \sigma(1.702x))$
-    \item \textbf{ReLU}: $\text{ReLU}'(x) = \heaviside(x)$
+    \item \textbf{Sigmoid}: $\frac{\partial}{\partial x}\sigma(x) = \sigma(x)(1 - \sigma(x))$
+    \item \textbf{Tanh}: $\frac{\partial}{\partial x}\tanh(x) = 1 - \tanh^2(x)$
+    \item \textbf{SiLU}: $\frac{\partial}{\partial x}\text{SiLU}(x) = \sigma(x) + x \cdot \sigma(x)(1 - \sigma(x))$
+    \item \textbf{GELU}: $\frac{\partial}{\partial x}\text{GELU}(x) = \sigma(kx) + kx \cdot \sigma(kx)(1 - \sigma(kx))$, where $k=1.702$
+    \item \textbf{ReLU}: $\frac{\partial}{\partial x}\text{ReLU}(x) = \heaviside(x)$
+    \item \textbf{Exp}: $\frac{\partial}{\partial x}e^x = e^x$
 \end{itemize}
+
+\paragraph{Softmax}
+The softmax backward is computed as given by Equation~\ref{eq:softmax_grad}:
+
+\begin{equation}
+\frac{\partial \mathcal{L}}{\partial x_i} = y_i \left( \frac{\partial \mathcal{L}}{\partial y_i} - \sum_j \frac{\partial \mathcal{L}}{\partial y_j} y_j \right)
+\label{eq:softmax_grad}
+\end{equation}
+where $y_i = \text{softmax}(x)_i$ denotes the softmax output and the sum is computed via parallel tree reduction.
+
+\paragraph{RMSNorm}
+The RMSNorm backward includes a Jacobian correction term as given by Equation~\ref{eq:rmsnorm_grad}:
+
+\begin{align}
+\frac{\partial \mathcal{L}}{\partial \mathbf{x}} &= \frac{\partial \mathcal{L}}{\partial \mathbf{y}} \odot \boldsymbol{\gamma} \cdot \text{rms}^{-1} - \mathbf{x} \cdot \text{rms}^{-3} \cdot \frac{1}{n} \sum_i \left( \frac{\partial \mathcal{L}}{\partial y_i} \gamma_i x_i \right) \nonumber \\
+\frac{\partial \mathcal{L}}{\partial \boldsymbol{\gamma}} &= \sum_{\text{batch}} \frac{\partial \mathcal{L}}{\partial \mathbf{y}} \odot \hat{\mathbf{x}}
+\label{eq:rmsnorm_grad}
+\end{align}
+where $\text{rms} = \sqrt{\frac{1}{n}\sum_i x_i^2 + \epsilon}$, $\hat{\mathbf{x}} = \mathbf{x}/\text{rms}$ denotes the normalized input, $\boldsymbol{\gamma}$ denotes the scale parameter, and $\odot$ denotes element-wise multiplication. The second term in $\frac{\partial \mathcal{L}}{\partial \mathbf{x}}$ accounts for the dependence of rms on $\mathbf{x}$.
+
+\paragraph{RoPE (Rotary Position Embedding)}
+The RoPE backward reverses the rotation as given by Equation~\ref{eq:rope_grad}:
+
+\begin{align}
+\frac{\partial \mathcal{L}}{\partial x_{2i-1}} &= \frac{\partial \mathcal{L}}{\partial x'_{2i-1}} \cos\theta + \frac{\partial \mathcal{L}}{\partial x'_{2i}} \sin\theta \nonumber \\
+\frac{\partial \mathcal{L}}{\partial x_{2i}} &= \frac{\partial \mathcal{L}}{\partial x'_{2i}} \cos\theta - \frac{\partial \mathcal{L}}{\partial x'_{2i-1}} \sin\theta
+\label{eq:rope_grad}
+\end{align}
+where $x'$ denotes the rotated output and $\theta$ denotes the rotation angle. This is the transpose of the forward rotation matrix.
 
 \subsubsection{Training Loop}
 
