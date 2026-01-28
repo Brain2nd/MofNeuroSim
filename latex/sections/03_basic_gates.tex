@@ -103,10 +103,10 @@ where $x_1, x_2 \in \{0, 1\}$ denote the binary inputs. Equivalently, using the 
 The 2-to-1 multiplexer selects between two inputs based on a select signal. The MUX gate is defined by Equation~\ref{eq:mux}:
 
 \begin{equation}
-\text{MUX}(a, b, s) = \text{OR}(\text{AND}(a, s), \text{AND}(b, \text{NOT}(s)))
+\text{MUX}(s, a, b) = \text{OR}(\text{AND}(s, a), \text{AND}(\text{NOT}(s), b))
 \label{eq:mux}
 \end{equation}
-where $a, b \in \{0, 1\}$ denote the data inputs and $s \in \{0, 1\}$ denotes the select signal. When $s = 1$, the output is $a$; when $s = 0$, the output is $b$.
+where $s \in \{0, 1\}$ denotes the select signal and $a, b \in \{0, 1\}$ denote the data inputs. When $s = 1$, the output is $a$; when $s = 0$, the output is $b$.
 
 \subsubsection{Half Adder}
 

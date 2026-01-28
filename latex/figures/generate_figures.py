@@ -269,6 +269,181 @@ def fig6_encoding():
     print("Generated: fig_encoding.png")
 
 
+def fig7_qwen3_forward():
+    """Figure 7: Qwen3 Forward Pass - SNN vs HuggingFace Comparison"""
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 3))
+
+    # Left: Bar chart showing error metrics
+    metrics = ['Max Abs\nError', 'Mean Abs\nError']
+    values = [4.84e-8, 5.01e-9]
+
+    bars = ax1.bar(metrics, values, color=[COLORS['blue'], COLORS['orange']],
+                   edgecolor='black', alpha=0.8)
+    ax1.set_ylabel('Absolute Error')
+    ax1.set_yscale('log')
+    ax1.set_ylim(1e-10, 1e-6)
+    ax1.set_title('(a) Forward Pass Error', fontsize=10)
+    ax1.grid(True, alpha=0.3, axis='y')
+
+    # Add value labels
+    for bar, val in zip(bars, values):
+        ax1.text(bar.get_x() + bar.get_width()/2, val * 1.5,
+                f'{val:.2e}', ha='center', va='bottom', fontsize=8)
+
+    # Right: Token prediction accuracy (pie chart style indicator)
+    # Show as a horizontal bar reaching 100%
+    ax2.barh(['Token\nPrediction'], [100], color=COLORS['green'],
+             edgecolor='black', alpha=0.8, height=0.5)
+    ax2.set_xlim(0, 110)
+    ax2.set_xlabel('Match Rate (%)')
+    ax2.set_title('(b) Token Prediction Match', fontsize=10)
+    ax2.text(100, 0, ' 100%', ha='left', va='center', fontsize=12, fontweight='bold')
+    ax2.axvline(x=100, color='gray', linestyle='--', alpha=0.5)
+    ax2.grid(True, alpha=0.3, axis='x')
+
+    plt.tight_layout()
+    plt.savefig('fig_qwen3_forward.png', dpi=300, bbox_inches='tight')
+    plt.close()
+    print("Generated: fig_qwen3_forward.png")
+
+
+def fig8_qwen3_backward():
+    """Figure 8: Qwen3 STE Backward Pass - Gradient Accuracy"""
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 3.5))
+
+    # Component data from test results
+    components = ['Mul', 'Add', 'RoPE', 'Softmax', 'SiLU', 'RMSNorm', 'Linear']
+    max_abs_error = [0, 0, 0, 2.98e-8, 1.79e-7, 2.38e-7, 9.54e-7]
+    zero_ulp_pct = [100.0, 100.0, 100.0, 90.6, 28.1, 37.5, 40.6]
+    max_ulp = [0, 0, 0, 2, 8, 16, 4]
+
+    # Left: 0-ULP percentage (bit-exact rate)
+    colors = [COLORS['green'] if p == 100 else COLORS['blue'] if p > 80 else COLORS['orange']
+              for p in zero_ulp_pct]
+    bars1 = ax1.barh(components, zero_ulp_pct, color=colors, edgecolor='black', alpha=0.8)
+    ax1.set_xlabel('Bit-Exact Rate (0-ULP %)')
+    ax1.set_xlim(0, 110)
+    ax1.axvline(x=100, color='gray', linestyle='--', alpha=0.5, label='100% (Bit-Exact)')
+    ax1.set_title('(a) Gradient Bit-Exactness', fontsize=10)
+    ax1.grid(True, alpha=0.3, axis='x')
+
+    # Add value labels
+    for bar, val in zip(bars1, zero_ulp_pct):
+        label = 'Bit-Exact!' if val == 100 else f'{val:.1f}%'
+        color = 'green' if val == 100 else 'black'
+        ax1.text(val + 2, bar.get_y() + bar.get_height()/2, label,
+                ha='left', va='center', fontsize=8, fontweight='bold', color=color)
+
+    # Right: Max Absolute Error (log scale)
+    # Filter out zeros for log scale, show them specially
+    x_pos = np.arange(len(components))
+
+    # Plot non-zero errors
+    for i, (comp, err) in enumerate(zip(components, max_abs_error)):
+        if err > 0:
+            ax2.bar(i, err, color=COLORS['red'], edgecolor='black', alpha=0.8)
+        else:
+            # Show zero as a special marker at the bottom
+            ax2.scatter(i, 1e-10, marker='*', s=100, color=COLORS['green'],
+                       edgecolors='black', zorder=5)
+
+    ax2.set_yscale('log')
+    ax2.set_ylim(1e-10, 1e-5)
+    ax2.set_xticks(x_pos)
+    ax2.set_xticklabels(components, rotation=45, ha='right', fontsize=8)
+    ax2.set_ylabel('Max Absolute Error')
+    ax2.set_title('(b) Maximum Gradient Error', fontsize=10)
+    ax2.grid(True, alpha=0.3, axis='y')
+
+    # Add legend for the star marker
+    ax2.scatter([], [], marker='*', s=100, color=COLORS['green'],
+               edgecolors='black', label='Exact (0 error)')
+    ax2.legend(loc='upper left', fontsize=8)
+
+    plt.tight_layout()
+    plt.savefig('fig_qwen3_backward.png', dpi=300, bbox_inches='tight')
+    plt.close()
+    print("Generated: fig_qwen3_backward.png")
+
+
+def fig9_qwen3_combined():
+    """Figure 9: Qwen3 Validation Summary - Combined View"""
+
+    fig = plt.figure(figsize=(7, 4))
+
+    # Create a 2x2 grid with custom sizing
+    gs = fig.add_gridspec(2, 2, height_ratios=[1, 1.2], hspace=0.35, wspace=0.3)
+
+    # Top-left: Forward pass error bars
+    ax1 = fig.add_subplot(gs[0, 0])
+    metrics = ['Max Error', 'Mean Error']
+    values = [4.84e-8, 5.01e-9]
+    bars = ax1.bar(metrics, values, color=[COLORS['blue'], COLORS['orange']],
+                   edgecolor='black', alpha=0.8, width=0.6)
+    ax1.set_ylabel('Abs Error')
+    ax1.set_yscale('log')
+    ax1.set_ylim(1e-10, 1e-6)
+    ax1.set_title('Forward Pass', fontsize=10, fontweight='bold')
+    for bar, val in zip(bars, values):
+        ax1.text(bar.get_x() + bar.get_width()/2, val * 2,
+                f'{val:.1e}', ha='center', va='bottom', fontsize=7)
+
+    # Top-right: Token prediction (simple text display)
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax2.text(0.5, 0.5, '100%', fontsize=36, fontweight='bold',
+             ha='center', va='center', color=COLORS['green'])
+    ax2.text(0.5, 0.15, 'Token Match', fontsize=12, ha='center', va='center')
+    ax2.set_xlim(0, 1)
+    ax2.set_ylim(0, 1)
+    ax2.axis('off')
+    ax2.set_title('Prediction Accuracy', fontsize=10, fontweight='bold')
+
+    # Bottom: Backward pass gradient accuracy
+    ax3 = fig.add_subplot(gs[1, :])
+
+    components = ['Mul', 'Add', 'RoPE', 'Softmax', 'SiLU', 'RMSNorm', 'Linear']
+    zero_ulp_pct = [100.0, 100.0, 100.0, 90.6, 28.1, 37.5, 40.6]
+    max_ulp = [0, 0, 0, 2, 8, 16, 4]
+
+    x_pos = np.arange(len(components))
+    colors = [COLORS['green'] if p == 100 else COLORS['blue'] if p > 80 else COLORS['orange']
+              for p in zero_ulp_pct]
+
+    bars = ax3.bar(x_pos, zero_ulp_pct, color=colors, edgecolor='black', alpha=0.8)
+    ax3.axhline(y=100, color='gray', linestyle='--', alpha=0.5, linewidth=1)
+    ax3.set_xticks(x_pos)
+    ax3.set_xticklabels(components, fontsize=9)
+    ax3.set_ylabel('Bit-Exact Rate (%)')
+    ax3.set_ylim(0, 115)
+    ax3.set_title('STE Backward Pass: Gradient Bit-Exactness', fontsize=10, fontweight='bold')
+
+    # Add labels
+    for bar, val, ulp in zip(bars, zero_ulp_pct, max_ulp):
+        if val == 100:
+            label = '0 ULP'
+            color = 'green'
+        else:
+            label = f'≤{ulp} ULP'
+            color = 'black'
+        ax3.text(bar.get_x() + bar.get_width()/2, val + 3, label,
+                ha='center', va='bottom', fontsize=7, fontweight='bold', color=color)
+
+    # Add legend
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor=COLORS['green'], edgecolor='black', alpha=0.8, label='Bit-Exact (100%)'),
+        Patch(facecolor=COLORS['blue'], edgecolor='black', alpha=0.8, label='>80%'),
+        Patch(facecolor=COLORS['orange'], edgecolor='black', alpha=0.8, label='<80%')
+    ]
+    ax3.legend(handles=legend_elements, loc='upper right', fontsize=7, ncol=3)
+
+    plt.savefig('fig_qwen3_validation.png', dpi=300, bbox_inches='tight')
+    plt.close()
+    print("Generated: fig_qwen3_validation.png")
+
+
 if __name__ == '__main__':
     print("Generating publication figures...")
     fig1_beta_scan()
@@ -277,4 +452,7 @@ if __name__ == '__main__':
     fig4_architecture()
     fig5_ulp_verification()
     fig6_encoding()
+    fig7_qwen3_forward()
+    fig8_qwen3_backward()
+    fig9_qwen3_combined()
     print("\nAll figures generated successfully!")

@@ -131,6 +131,79 @@ Figure~\ref{fig:fp_noise} shows the robustness of floating-point operators under
 \label{fig:fp_noise}
 \end{figure}
 
+\subsection{Qwen3 Model Validation}
+
+We validate MofNeuroSim on the Qwen3 architecture, a state-of-the-art large language model. We use a minimal configuration for fast verification: vocab\_size=32, hidden\_size=8, intermediate\_size=16, 1 layer, 2 attention heads (GQA with 1 KV head), head\_dim=4, seq\_len=8.
+
+\subsubsection{Forward Pass Accuracy}
+
+Table~\ref{tab:qwen3_forward} compares the SNN forward pass against HuggingFace's Qwen3 reference implementation.
+
+\begin{table}[t]
+\centering
+\caption{Qwen3 Forward Pass: SNN vs HuggingFace}
+\label{tab:qwen3_forward}
+\footnotesize
+\begin{tabular}{@{}lr@{}}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Max Absolute Error & $4.84 \times 10^{-8}$ \\
+Mean Absolute Error & $5.01 \times 10^{-9}$ \\
+Token Prediction Match & 100\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The SNN implementation achieves near-bit-exact forward pass accuracy, with all token predictions matching the reference model. Figure~\ref{fig:qwen3_forward} visualizes these results.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig_qwen3_forward.png}
+\caption{Qwen3 forward pass validation: (a) Maximum and mean absolute errors between SNN and HuggingFace reference implementations; (b) Token prediction match rate achieves 100\%.}
+\label{fig:qwen3_forward}
+\end{figure}
+
+\subsubsection{Backward Pass (STE Gradient) Accuracy}
+
+Table~\ref{tab:qwen3_backward} shows the gradient accuracy for each Qwen3 component using Straight-Through Estimator (STE) training.
+
+\begin{table}[t]
+\centering
+\caption{Qwen3 STE Backward Pass Accuracy}
+\label{tab:qwen3_backward}
+\footnotesize
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Component} & \textbf{Max Abs} & \textbf{Max ULP} & \textbf{0-ULP\%} \\
+\midrule
+Linear (grad\_x) & $9.54 \times 10^{-7}$ & 4 & 40.6 \\
+RMSNorm (grad\_w) & $2.38 \times 10^{-7}$ & 16 & 37.5 \\
+SiLU (grad\_x) & $1.79 \times 10^{-7}$ & 8 & 28.1 \\
+Softmax (grad\_x) & $2.98 \times 10^{-8}$ & 2 & 90.6 \\
+Mul (grad\_a, grad\_b) & 0 & 0 & \textbf{100.0} \\
+Add (grad\_a, grad\_b) & 0 & 0 & \textbf{100.0} \\
+RoPE (grad\_x) & 0 & 0 & \textbf{100.0} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Key observations:
+\begin{itemize}
+    \item Element-wise operations (Mul, Add, RoPE) achieve \textbf{bit-exact} gradients (0 ULP error)
+    \item Softmax achieves 90.6\% bit-exact rate with max 2 ULP error
+    \item All components have max absolute error $< 10^{-6}$, suitable for training
+\end{itemize}
+
+Figure~\ref{fig:qwen3_backward} visualizes the gradient accuracy across all Qwen3 components.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig_qwen3_backward.png}
+\caption{Qwen3 STE backward pass gradient accuracy: (a) Bit-exact rate showing Mul, Add, and RoPE achieve 100\% 0-ULP; (b) Maximum gradient error (stars indicate exact zero error).}
+\label{fig:qwen3_backward}
+\end{figure}
+
 \subsection{Transformer Training Demonstration}
 
 \subsubsection{Model Architecture}
@@ -282,10 +355,10 @@ Table~\ref{tab:sparsity} summarizes weight and activation sparsity. We define sp
 \centering
 \caption{Sparsity Analysis of Pretrained Models}
 \label{tab:sparsity}
-\small
-\begin{tabular}{@{}lrrr@{}}
+\footnotesize
+\begin{tabular}{@{}lccc@{}}
 \toprule
-\textbf{Model} & \textbf{Weight Sparsity} & \textbf{Activation Sparsity} & \textbf{Parameters} \\
+\textbf{Model} & \textbf{Wt. Spar.} & \textbf{Act. Spar.} & \textbf{Params} \\
 \midrule
 ResNet-18 & 0.05\% & 0.29\% & 11.7M \\
 MobileNetV2 & $<$0.01\% & 4.94\% & 3.4M \\
@@ -304,20 +377,22 @@ We encode real activation values using MofNeuroSim's FP32 encoder and measure th
 \centering
 \caption{Spike Firing Rate by Bit Position (FP32)}
 \label{tab:firing_rate}
-\small
-\begin{tabular}{@{}llcccc@{}}
+\footnotesize
+\begin{tabular}{@{}lccccc@{}}
 \toprule
-\textbf{Model} & \textbf{Type} & \textbf{Overall} & \textbf{Sign} & \textbf{Exponent} & \textbf{Mantissa} \\
+\textbf{Model} & \textbf{Type} & \textbf{All} & \textbf{Sign} & \textbf{Exp} & \textbf{Mant} \\
 \midrule
-ResNet-18 & CV & 54.0\% & 65.9\% & 68.9\% & 48.3\% \\
-MobileNetV2 & CV & 50.5\% & 47.1\% & 62.9\% & 46.3\% \\
-VGG-11 & CV & 51.3\% & 70.4\% & 56.0\% & 48.9\% \\
-DistilBERT & NLP & 54.3\% & 57.6\% & 69.8\% & 48.8\% \\
-BERT-tiny & NLP & 53.9\% & 56.7\% & 68.9\% & 48.6\% \\
+ResNet-18 & CV & 54.0 & 65.9 & 68.9 & 48.3 \\
+MobileNetV2 & CV & 50.5 & 47.1 & 62.9 & 46.3 \\
+VGG-11 & CV & 51.3 & 70.4 & 56.0 & 48.9 \\
+DistilBERT & NLP & 54.3 & 57.6 & 69.8 & 48.8 \\
+BERT-tiny & NLP & 53.9 & 56.7 & 68.9 & 48.6 \\
 \midrule
-\textbf{Average} & -- & \textbf{52.8\%} & -- & -- & -- \\
+\textbf{Average} & -- & \textbf{52.8} & -- & -- & -- \\
 \bottomrule
 \end{tabular}
+\vspace{-2mm}
+\raggedright\scriptsize All values in \%.
 \end{table}
 
 Key observations:

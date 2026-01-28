@@ -55,15 +55,15 @@ For a $d$-dimensional vector, RoPE applies $d/2$ 2D rotations. The rotation matr
 
 \begin{equation}
 \mathbf{R}_m = \begin{pmatrix}
-\cos(m\theta_1) & -\sin(m\theta_1) & & \\
-\sin(m\theta_1) & \cos(m\theta_1) & & \\
+c_1 & -s_1 & & \\
+s_1 & c_1 & & \\
 & & \ddots & \\
-& & & \cos(m\theta_{d/2}) & -\sin(m\theta_{d/2}) \\
-& & & \sin(m\theta_{d/2}) & \cos(m\theta_{d/2})
+& & & c_{d/2} & -s_{d/2} \\
+& & & s_{d/2} & c_{d/2}
 \end{pmatrix}
 \label{eq:rotation_matrix}
 \end{equation}
-where $\mathbf{R}_m$ denotes the rotation matrix at position $m$, $d$ denotes the embedding dimension, and $\theta_i = 10000^{-2(i-1)/d}$ denotes the frequency for dimension pair $i$.
+Here $c_i = \cos(m\theta_i)$, $s_i = \sin(m\theta_i)$, $\mathbf{R}_m$ denotes the rotation matrix at position $m$, $d$ denotes the embedding dimension, and $\theta_i = 10000^{-2(i-1)/d}$ denotes the frequency for dimension pair $i$.
 
 \paragraph{Efficient Computation}
 Rather than explicit matrix multiplication, RoPE is computed element-wise as given by Equation~\ref{eq:rope_efficient}:

@@ -39,10 +39,12 @@ def float64_to_bits(f):
 
 def make_fp64_constant(val, batch_shape, device):
     """创建FP64常量脉冲 (向量化)"""
-    bits = float64_to_bits(val)
+    # 使用 torch.float64 张量 + view(int64) 进行位重解释（避免无符号整数溢出）
+    val_tensor = torch.tensor(val, dtype=torch.float64, device=device)
+    bits_int = val_tensor.view(torch.int64)  # 位重解释，正确处理负数
     # 向量化位提取: 使用位移和掩码
     bit_positions = torch.arange(63, -1, -1, device=device, dtype=torch.int64)
-    pulse_1d = ((bits >> bit_positions) & 1).float()  # [64]
+    pulse_1d = ((bits_int >> bit_positions) & 1).float()  # [64]
     # 广播到 batch_shape
     pulse = pulse_1d.expand(batch_shape + (64,)).clone()
     return pulse

@@ -110,8 +110,9 @@ where $s \in \{0, 1\}$ denotes the sign bit, $x$ denotes the input floating-poin
 The decoder reconstructs the floating-point value from the pulse sequence. This is a \textbf{boundary operation} where traditional arithmetic is permitted. The decoding formula is given by Equation~\ref{eq:decode}:
 
 \begin{equation}
-x = (-1)^{p_0} \times 2^{\sum_{i=1}^{n_e} p_i \cdot 2^{n_e-i} - \text{bias}} \times \left(1 + \sum_{j=1}^{n_m} p_{n_e+j} \cdot 2^{-j}\right)
+x = (-1)^{p_0} \cdot 2^{E - \text{bias}} \cdot \left(1 + M\right)
 \label{eq:decode}
 \end{equation}
+where $E = \sum_{i=1}^{n_e} p_i \cdot 2^{n_e-i}$ is the exponent and $M = \sum_{j=1}^{n_m} p_{n_e+j} \cdot 2^{-j}$ is the mantissa fraction.
 where $p_0$ denotes the sign bit, $p_1, \ldots, p_{n_e}$ denote the exponent bits, $p_{n_e+1}, \ldots, p_{n_e+n_m}$ denote the mantissa bits, $n_e$ denotes the number of exponent bits, $n_m$ denotes the number of mantissa bits, and $\text{bias}$ denotes the exponent bias. The decoder operates at the system boundary, converting pulse sequences back to floating-point for output.
 
